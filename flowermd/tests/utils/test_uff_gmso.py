@@ -77,6 +77,7 @@ class TestUFFGMSOAssignment:
             "bonds": 7,
             "angles": 12,
             "proper_dihedrals": 9,
+            "impropers": 0,
         }
         assert not original.is_typed()
         assert molecule.ToBinary(Chem.PropertyPickleOptions.AllProps) == before
@@ -269,14 +270,12 @@ class TestUFFGMSOAssignment:
             topology.n_dihedrals,
         )
 
-    def test_improper_assignment_must_be_explicitly_deferred(self):
+    def test_improper_assignment_defaults_on_and_accepts_explicit_off(self):
         topology, mol, atom_map = inputs()
-        with pytest.raises(TypeError, match="include_impropers"):
-            assign_uff_parameters(topology, mol, atom_map=atom_map)
-        with pytest.raises(NotImplementedError, match="improper assignment"):
-            assign_uff_parameters(
-                topology, mol, atom_map=atom_map, include_impropers=True
-            )
+        result, report = assign_uff_parameters(topology, mol, atom_map=atom_map)
+        assert report["include_impropers"] is True
+        assert result.n_impropers == 0
+        assert report["retained_untyped_impropers"] == 0
         with pytest.raises(ValueError, match="must be a bool"):
             assign_uff_parameters(
                 topology, mol, atom_map=atom_map, include_impropers=0

@@ -55,6 +55,11 @@ def extract_uff_parameters(molecule):
         SP central atoms have no torsion terms. Other torsion-bearing centers
         must be SP2 or SP3.
     """
+    return _extract_uff_parameters_with_molecule(molecule)[0]
+
+
+def _extract_uff_parameters_with_molecule(molecule):
+    """Return existing tables and the same sanitized copy for GMSO assignment."""
     try:
         from rdkit import Chem
         from rdkit.Chem import rdForceFieldHelpers as uff
@@ -234,7 +239,7 @@ def extract_uff_parameters(molecule):
                 }
             dihedrals.append(group)
             dihedral_types.append(dihedral_keys[key])
-    return {
+    parameters = {
         "particle_types": tuple(particle_types),
         "particle_type_params": particle_params,
         "bonds": tuple(bonds),
@@ -248,6 +253,7 @@ def extract_uff_parameters(molecule):
         "dihedral_types": tuple(dihedral_types),
         "dihedral_params": dihedral_params,
     }
+    return parameters, mol
 
 
 def _torsion_form(mol, group, chem):
