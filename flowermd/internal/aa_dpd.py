@@ -27,7 +27,7 @@ def dpd_pair_parameters(
         epsilon factor. If False, use the nominal coefficients for every pair.
     particle_epsilons : mapping of str to float, optional
         Required when weighting is enabled, with exactly the particle type
-        keys and positive finite epsilon values in one common energy unit.
+        keys and nonnegative finite epsilon values in one common energy unit.
         The caller selects the epsilon provider; this function only uses numbers.
         Omit when weighting is disabled.
     epsilon_reference : float, optional
@@ -45,6 +45,8 @@ def dpd_pair_parameters(
     Uniform mode needs no epsilon inputs or force-field parameter extraction.
     Supplying epsilon arguments in that mode is an error. This function does
     not construct forces, resolve UFF/Sage parameters, or convert units.
+    In weighted mode, a zero epsilon makes both coefficients zero for every
+    pair containing that type; see :func:`epsilon_scaled_dpd_parameters`.
     """
     if not isinstance(epsilon_weighting, bool):
         raise ValueError("epsilon_weighting must be a bool")
@@ -91,7 +93,7 @@ def epsilon_scaled_dpd_parameters(
     Parameters
     ----------
     particle_epsilons : mapping of str to float
-        Positive, finite epsilon magnitudes in one common energy unit.
+        Nonnegative, finite epsilon magnitudes in one common energy unit.
         Mapping order determines the order of the returned unordered pairs.
     repulsion, gamma : float
         Finite, nonnegative reference DPD coefficients.
@@ -100,6 +102,7 @@ def epsilon_scaled_dpd_parameters(
         maximum supplied epsilon. Historical protocols using a different
         reference (including the maximum of only overridden epsilons) must
         pass it explicitly.
+        All-zero epsilons require an explicit positive reference.
 
     Returns
     -------
@@ -115,6 +118,9 @@ def epsilon_scaled_dpd_parameters(
     can supply UFF pair epsilons. Inputs are numeric magnitudes; no unit
     conversion is performed. Nonzero outputs outside the representable float
     range raise ValueError instead of silently becoming infinity or zero.
+    A zero epsilon produces exactly zero A and gamma for pairs containing
+    that type, disabling their conservative repulsion and DPD thermostat
+    coupling. No epsilon floor or fallback is applied.
     """
     if not isinstance(particle_epsilons, Mapping) or not particle_epsilons:
         raise ValueError("particle_epsilons must be a nonempty mapping")
@@ -122,11 +128,13 @@ def epsilon_scaled_dpd_parameters(
     for name, epsilon in particle_epsilons.items():
         if not isinstance(name, str) or not name:
             raise ValueError("particle type names must be nonempty strings")
-        epsilons[name] = _finite_coefficient(epsilon, f"epsilon for {name}")
+        epsilons[name] = _finite_coefficient(
+            epsilon, f"epsilon for {name}", allow_zero=True
+        )
     repulsion = _finite_coefficient(repulsion, "repulsion", allow_zero=True)
     gamma = _finite_coefficient(gamma, "gamma", allow_zero=True)
     reference = (
-        max(epsilons.values())
+        _finite_coefficient(max(epsilons.values()), "epsilon_reference")
         if epsilon_reference is None
         else _finite_coefficient(epsilon_reference, "epsilon_reference")
     )
@@ -160,7 +168,7 @@ def _finite_coefficient(value, name, allow_zero=False):
 
 
 def _weighted_coefficient(coefficient, first, second, reference):
-    if coefficient == 0:
+    if coefficient == 0 or first == 0 or second == 0:
         return 0.0
     # Keep powers of two separate so intermediate products cannot overflow
     # or underflow when the final coefficient is representable.

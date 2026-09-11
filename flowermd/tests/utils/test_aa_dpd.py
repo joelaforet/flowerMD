@@ -91,7 +91,7 @@ class TestDPDPairParameters:
         with pytest.raises(ValueError, match="mapping|exactly match"):
             dpd_pair_parameters(["a", "b"], 40, 20, particle_epsilons=epsilons)
 
-    @pytest.mark.parametrize("value", [-1, 0, math.nan])
+    @pytest.mark.parametrize("value", [-1, math.nan])
     def test_weighted_value_validation(self, value):
         with pytest.raises(ValueError, match="epsilon for a"):
             dpd_pair_parameters(["a"], 40, 20, particle_epsilons={"a": value})
@@ -130,6 +130,50 @@ class TestEpsilonScaledDPDParameters:
         pairs = epsilon_scaled_dpd_parameters({"a": 0.3, "b": 0.3}, 40, 20)
         for values in pairs.values():
             assert values == pytest.approx({"A": 40, "gamma": 20})
+
+    @pytest.mark.parametrize(
+        "names", [("zero", "positive"), ("positive", "zero")]
+    )
+    @pytest.mark.parametrize(
+        "positive", [0.25, sys.float_info.max, math.ulp(0.0)]
+    )
+    def test_zero_endpoints(self, names, positive):
+        epsilons = {"zero": 0.0, "positive": positive}
+        pairs = dpd_pair_parameters(
+            names, 1250, 200, particle_epsilons=epsilons
+        )
+        for pair, values in pairs.items():
+            if "zero" in pair:
+                assert values == {"A": 0.0, "gamma": 0.0}
+            else:
+                assert values == pytest.approx({"A": 1250, "gamma": 200})
+        assert epsilons == {"zero": 0.0, "positive": positive}
+
+    @pytest.mark.parametrize("repulsion,gamma", [(1250, 200), (0, 0)])
+    def test_all_zero_requires_positive_reference(self, repulsion, gamma):
+        with pytest.raises(ValueError, match="epsilon_reference"):
+            epsilon_scaled_dpd_parameters({"a": 0, "b": 0}, repulsion, gamma)
+
+    @pytest.mark.parametrize(
+        "reference", [0.105, sys.float_info.max, math.ulp(0.0)]
+    )
+    def test_all_zero_with_explicit_reference(self, reference):
+        pairs = dpd_pair_parameters(
+            ["a", "b"],
+            sys.float_info.max,
+            200,
+            particle_epsilons={"a": 0, "b": 0},
+            epsilon_reference=reference,
+        )
+        assert len(pairs) == 3
+        assert all(
+            values == {"A": 0.0, "gamma": 0.0} for values in pairs.values()
+        )
+
+    @pytest.mark.parametrize("reference", [0, -1, math.nan, math.inf])
+    def test_zero_epsilons_do_not_bypass_reference_validation(self, reference):
+        with pytest.raises(ValueError, match="epsilon_reference"):
+            epsilon_scaled_dpd_parameters({"a": 0}, 40, 20, reference)
 
     @pytest.mark.parametrize("reference", [None, 0.5])
     @pytest.mark.parametrize("unit_factor", [1e-200, 4.184, 1e200])
@@ -183,7 +227,7 @@ class TestEpsilonScaledDPDParameters:
             epsilon_scaled_dpd_parameters(mapping, 40, 20)
 
     @pytest.mark.parametrize(
-        "value", [0, -1, math.inf, -math.inf, math.nan, "1", None, True]
+        "value", [-1, math.inf, -math.inf, math.nan, "1", None, True]
     )
     def test_invalid_epsilon(self, value):
         with pytest.raises(ValueError, match="epsilon for a"):
