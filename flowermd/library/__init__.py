@@ -1,6 +1,7 @@
 # ruff: noqa: F401
 """Library of predefined molecules, recipes and forcefields."""
 
+from .aa_dpd import AllAtomDPD
 from .forcefields import (
     GAFF,
     OPLS_AA,
