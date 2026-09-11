@@ -3,7 +3,113 @@ import sys
 
 import pytest
 
-from flowermd.internal.aa_dpd import epsilon_scaled_dpd_parameters
+from flowermd.internal.aa_dpd import (
+    dpd_pair_parameters,
+    epsilon_scaled_dpd_parameters,
+)
+
+
+class TestDPDPairParameters:
+    @pytest.mark.parametrize("repulsion,gamma", [(1250, 200), (0, 200), (0, 0)])
+    def test_uniform_without_epsilon_dependency(
+        self, monkeypatch, repulsion, gamma
+    ):
+        def forbidden(*args, **kwargs):
+            pytest.fail("uniform pairs must not use epsilon weighting")
+
+        monkeypatch.setattr(
+            "flowermd.internal.aa_dpd.epsilon_scaled_dpd_parameters", forbidden
+        )
+        names = ["z", "a"]
+        pairs = dpd_pair_parameters(
+            names, repulsion, gamma, epsilon_weighting=False
+        )
+        assert list(pairs) == [("z", "z"), ("z", "a"), ("a", "a")]
+        assert all(
+            values == {"A": repulsion, "gamma": gamma}
+            for values in pairs.values()
+        )
+        assert names == ["z", "a"]
+        pairs["z", "z"]["A"] = -1
+        assert pairs["z", "a"]["A"] == repulsion
+
+    @pytest.mark.parametrize("reference", [None, 0.5])
+    def test_weighted_values_and_type_order(self, reference):
+        epsilons = {"a": 1.0, "z": 0.25}
+        original = epsilons.copy()
+        pairs = dpd_pair_parameters(
+            ("z", "a"),
+            40,
+            20,
+            particle_epsilons=epsilons,
+            epsilon_reference=reference,
+        )
+        assert list(pairs) == [("z", "z"), ("z", "a"), ("a", "a")]
+        denominator = 1.0 if reference is None else reference
+        for pair, numerator in zip(pairs, [0.25, 0.5, 1.0]):
+            assert pairs[pair] == pytest.approx(
+                {
+                    "A": 40 * numerator / denominator,
+                    "gamma": 20 * numerator / denominator,
+                }
+            )
+        assert epsilons == original
+
+    def test_single_type_uniform(self):
+        assert dpd_pair_parameters(
+            ["C"], 1250, 200, epsilon_weighting=False
+        ) == {("C", "C"): {"A": 1250, "gamma": 200}}
+
+    @pytest.mark.parametrize(
+        "names", [None, [], (), "C", b"C", {"C"}, {"C": 1}]
+    )
+    def test_reject_unordered_or_empty_types(self, names):
+        with pytest.raises(ValueError, match="ordered sequence"):
+            dpd_pair_parameters(names, 40, 20, epsilon_weighting=False)
+
+    @pytest.mark.parametrize("names", [[""], [1], [None], [["C"]], ["C", "C"]])
+    def test_invalid_names(self, names):
+        with pytest.raises(ValueError, match="type names"):
+            dpd_pair_parameters(names, 40, 20, epsilon_weighting=False)
+
+    @pytest.mark.parametrize("switch", [None, 0, 1, "false", [], {}])
+    def test_invalid_switch(self, switch):
+        with pytest.raises(ValueError, match="epsilon_weighting"):
+            dpd_pair_parameters(["C"], 40, 20, epsilon_weighting=switch)
+
+    @pytest.mark.parametrize("name", ["repulsion", "gamma"])
+    @pytest.mark.parametrize("value", [-1, math.inf, math.nan, True, "1", None])
+    def test_uniform_invalid_coefficients(self, name, value):
+        kwargs = {"repulsion": 40, "gamma": 20, name: value}
+        with pytest.raises(ValueError, match=name):
+            dpd_pair_parameters(["C"], epsilon_weighting=False, **kwargs)
+
+    @pytest.mark.parametrize(
+        "epsilons", [None, [], {}, {"a": 1}, {"a": 1, "b": 2, "c": 3}]
+    )
+    def test_missing_or_mismatched_epsilons(self, epsilons):
+        with pytest.raises(ValueError, match="mapping|exactly match"):
+            dpd_pair_parameters(["a", "b"], 40, 20, particle_epsilons=epsilons)
+
+    @pytest.mark.parametrize("value", [-1, 0, math.nan])
+    def test_weighted_value_validation(self, value):
+        with pytest.raises(ValueError, match="epsilon for a"):
+            dpd_pair_parameters(["a"], 40, 20, particle_epsilons={"a": value})
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"particle_epsilons": {}},
+            {"particle_epsilons": {"a": 1}},
+            {"epsilon_reference": 1},
+            {"epsilon_reference": 0},
+        ],
+    )
+    def test_uniform_rejects_epsilon_arguments(self, kwargs):
+        with pytest.raises(ValueError, match="omit epsilon arguments"):
+            dpd_pair_parameters(
+                ["a"], 40, 20, epsilon_weighting=False, **kwargs
+            )
 
 
 class TestEpsilonScaledDPDParameters:

@@ -1,8 +1,86 @@
 """Internal coefficient weighting for all-atom DPD force providers."""
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from numbers import Real
+
+
+def dpd_pair_parameters(
+    particle_types,
+    repulsion,
+    gamma,
+    *,
+    epsilon_weighting=True,
+    particle_epsilons=None,
+    epsilon_reference=None,
+):
+    """Construct uniform or epsilon-weighted all-atom DPD coefficients.
+
+    Parameters
+    ----------
+    particle_types : sequence of str
+        Nonempty ordered sequence of unique, nonempty particle type names.
+    repulsion, gamma : float
+        Finite, nonnegative nominal DPD coefficients.
+    epsilon_weighting : bool, optional
+        If True (default), weight both coefficients by the geometric-mean
+        epsilon factor. If False, use the nominal coefficients for every pair.
+    particle_epsilons : mapping of str to float, optional
+        Required when weighting is enabled, with exactly the particle type
+        keys and positive finite epsilon values in one common energy unit.
+        The caller selects the epsilon provider; this function only uses numbers.
+        Omit when weighting is disabled.
+    epsilon_reference : float, optional
+        Positive reference in the same energy unit; defaults to the maximum
+        supplied epsilon. Omit when weighting is disabled.
+
+    Returns
+    -------
+    dict
+        Unordered type pairs, including self pairs, in particle-type order,
+        each mapping to ``A`` and ``gamma``. Inputs are not modified.
+
+    Notes
+    -----
+    Uniform mode needs no epsilon inputs or force-field parameter extraction.
+    Supplying epsilon arguments in that mode is an error. This function does
+    not construct forces, resolve UFF/Sage parameters, or convert units.
+    """
+    if not isinstance(epsilon_weighting, bool):
+        raise ValueError("epsilon_weighting must be a bool")
+    if (
+        isinstance(particle_types, (str, bytes))
+        or not isinstance(particle_types, Sequence)
+        or not particle_types
+    ):
+        raise ValueError("particle_types must be a nonempty ordered sequence")
+    names = tuple(particle_types)
+    if any(not isinstance(name, str) or not name for name in names):
+        raise ValueError("particle type names must be nonempty strings")
+    if len(set(names)) != len(names):
+        raise ValueError("particle type names must be unique")
+    repulsion = _finite_coefficient(repulsion, "repulsion", allow_zero=True)
+    gamma = _finite_coefficient(gamma, "gamma", allow_zero=True)
+    if not epsilon_weighting:
+        if particle_epsilons is not None or epsilon_reference is not None:
+            raise ValueError(
+                "omit epsilon arguments when weighting is disabled"
+            )
+        return {
+            (first, second): {"A": repulsion, "gamma": gamma}
+            for index, first in enumerate(names)
+            for second in names[index:]
+        }
+    if not isinstance(particle_epsilons, Mapping):
+        raise ValueError("particle_epsilons must be a mapping when weighting")
+    if set(particle_epsilons) != set(names):
+        raise ValueError("epsilon keys must exactly match particle_types")
+    return epsilon_scaled_dpd_parameters(
+        {name: particle_epsilons[name] for name in names},
+        repulsion,
+        gamma,
+        epsilon_reference,
+    )
 
 
 def epsilon_scaled_dpd_parameters(
