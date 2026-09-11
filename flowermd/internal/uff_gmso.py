@@ -20,11 +20,12 @@ def assign_uff_parameters(
     Parameters
     ----------
     topology : gmso.Topology
-        Untyped input, including the preidentified connections produced by
-        flowerMD's ordinary mBuild-to-GMSO conversion. Positions, box, site
-        names, labels and connection order are preserved on the copy.
+        Untyped input, including connections identified during flowerMD's
+        mBuild-to-GMSO conversion. The copy preserves positions, box, site
+        names, labels and the order of retained connections.
     molecule : rdkit.Chem.Mol
-        Authoritative explicit-hydrogen chemical graph. Input is not modified.
+        Chemical graph with hydrogens as explicit atoms. The function preserves
+        the input molecule.
     atom_map : mapping of int to int
         Required bijection from RDKit atom indices to GMSO site indices.
         Elements and mapped bond edges must agree.
@@ -34,24 +35,31 @@ def assign_uff_parameters(
 
     Notes
     -----
-    Assigns native GMSO atom, harmonic bond/angle and periodic proper types.
-    Angles use the frozen harmonic surrogate, not the full UFF cosine form.
-    Atom-type LJ sigma is converted from UFF's minimum-energy distance; this
-    stores parameters and does not create LJ forces. No bonded scale is applied.
-    Isotope masses overwrite copied site masses; explicit site charges remain.
-    Charges are not parameterized. Sites without explicit charges inherit the
-    native GMSO atom-type zero default; no formal-to-partial charge conversion
-    is performed.
+    The function assigns native GMSO atom types, harmonic bond and angle
+    types, and periodic proper torsion types. Angles use the frozen harmonic
+    approximation to the UFF cosine form. The function converts UFF's
+    minimum-energy distance to Lennard-Jones sigma and stores it on the atom
+    type. It does not create Lennard-Jones forces or apply bonded scaling.
 
-    Matching derived connections are assigned in place, accepting full
-    reversal. Missing assigned groups are added. Unassigned derived groups
-    (e.g. SP-centered proper torsions) are removed and reported, unless they
-    carry restraints, which are rejected. Existing typed inputs are rejected.
-    Inversions use the Wilson out-of-plane coordinate, with GMSO members
-    ordered center, plane atom, plane atom, out atom. The three ordered terms
-    retain the getter's already-divided force constant. Generic improper
-    sorting or a harmonic-dihedral substitution does not preserve this model;
-    a compatible force backend is still required. No force is constructed here.
+    Isotope masses overwrite copied site masses. Explicit site charges remain.
+    The function does not assign charges. Sites without explicit charges use
+    the native GMSO atom-type default of zero. Formal charges do not become
+    partial charges.
+
+    The function assigns matching derived connections in place. Angle and
+    proper torsion matching accepts full reversal. Improper matching preserves
+    the center and out atom roles and permits swapping only the two plane
+    atoms. The function adds missing assigned groups. It removes and reports
+    unassigned derived groups, such as proper torsions with SP centers.
+    It rejects these groups if they carry restraints. It also rejects typed
+    inputs.
+
+    Inversions use the Wilson out-of-plane coordinate. GMSO members have the
+    order center, plane atom, plane atom, out atom. The three ordered terms
+    keep the getter's force constant, which already includes the division by
+    three. Generic improper sorting or a harmonic-dihedral substitution
+    changes this model. A compatible force backend is still required.
+    This function does not construct forces.
     """
     if not isinstance(include_impropers, bool):
         raise ValueError("include_impropers must be a bool")

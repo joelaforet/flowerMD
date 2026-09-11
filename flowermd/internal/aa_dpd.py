@@ -1,4 +1,4 @@
-"""Internal coefficient weighting for all-atom DPD force providers."""
+"""Internal coefficient weighting for all-atom DPD."""
 
 import math
 from collections.abc import Mapping, Sequence
@@ -23,15 +23,15 @@ def dpd_pair_parameters(
     repulsion, gamma : float
         Finite, nonnegative nominal DPD coefficients.
     epsilon_weighting : bool, optional
-        If True (default), weight both coefficients by the geometric-mean
+        If True, the default, weight both coefficients by the geometric-mean
         epsilon factor. If False, use the nominal coefficients for every pair.
     particle_epsilons : mapping of str to float, optional
         Required when weighting is enabled, with exactly the particle type
         keys and nonnegative finite epsilon values in one common energy unit.
-        The caller selects the epsilon provider; this function only uses numbers.
+        The caller supplies the epsilon values. This function only uses numbers.
         Omit when weighting is disabled.
     epsilon_reference : float, optional
-        Positive reference in the same energy unit; defaults to the maximum
+        Positive reference in the same energy unit. Defaults to the maximum
         supplied epsilon. Omit when weighting is disabled.
 
     Returns
@@ -44,9 +44,9 @@ def dpd_pair_parameters(
     -----
     Uniform mode needs no epsilon inputs or force-field parameter extraction.
     Supplying epsilon arguments in that mode is an error. This function does
-    not construct forces, resolve UFF/Sage parameters, or convert units.
+    not construct forces, assign UFF or Sage parameters, or convert units.
     In weighted mode, a zero epsilon makes both coefficients zero for every
-    pair containing that type; see :func:`epsilon_scaled_dpd_parameters`.
+    pair containing that type. See :func:`epsilon_scaled_dpd_parameters`.
     """
     if not isinstance(epsilon_weighting, bool):
         raise ValueError("epsilon_weighting must be a bool")
@@ -99,9 +99,9 @@ def epsilon_scaled_dpd_parameters(
         Finite, nonnegative reference DPD coefficients.
     epsilon_reference : float, optional
         Positive, finite reference in the same energy unit. Defaults to the
-        maximum supplied epsilon. Historical protocols using a different
-        reference (including the maximum of only overridden epsilons) must
-        pass it explicitly.
+        maximum supplied epsilon. Pass a reference explicitly to reproduce a
+        protocol that used a different value. This includes protocols that
+        used the maximum of only overridden epsilons.
         All-zero epsilons require an explicit positive reference.
 
     Returns
@@ -113,14 +113,13 @@ def epsilon_scaled_dpd_parameters(
 
     Notes
     -----
-    This weights coefficients only; it does not construct forces or add
-    Lennard-Jones or Coulomb interactions. Both UFF and Sage bonded providers
-    can supply UFF pair epsilons. Inputs are numeric magnitudes; no unit
-    conversion is performed. Nonzero outputs outside the representable float
+    This function weights coefficients. It does not construct forces or add
+    Lennard-Jones or Coulomb interactions. It takes numeric magnitudes and
+    does not convert units. Nonzero outputs outside the representable float
     range raise ValueError instead of silently becoming infinity or zero.
     A zero epsilon produces exactly zero A and gamma for pairs containing
     that type, disabling their conservative repulsion and DPD thermostat
-    coupling. No epsilon floor or fallback is applied.
+    coupling. The function applies no epsilon floor or fallback.
     """
     if not isinstance(particle_epsilons, Mapping) or not particle_epsilons:
         raise ValueError("particle_epsilons must be a nonempty mapping")

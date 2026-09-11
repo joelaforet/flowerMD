@@ -7,8 +7,8 @@ from itertools import combinations
 def extract_uff_parameters(molecule):
     """Extract UFF parameters from an explicit-hydrogen RDKit molecule.
 
-    A sanitized copy is used; the input graph, properties, stereochemistry and
-    conformers are not modified. Hydrogens must be graph atoms, not implicit
+    The function sanitizes a copy. It preserves the input graph, properties,
+    stereochemistry and conformers. Hydrogens must be graph atoms, not implicit
     hydrogens or atom-local explicit hydrogen counts. Disconnected graphs are
     supported. Dummy atoms and unsupported bond orders or UFF assignments
     raise ValueError.
@@ -16,39 +16,39 @@ def extract_uff_parameters(molecule):
     Returns
     -------
     dict
-        ``particle_types`` is a tuple in atom-index order;
+        ``particle_types`` is a tuple in atom-index order.
         ``particle_type_params`` maps names to ``r_min_a``,
-        ``epsilon_kcal_mol`` and ``mass_amu``; ``bonds`` is a tuple of sorted
-        atom-index pairs in lexicographic order; ``bond_orders`` and
-        ``bond_types`` are aligned tuples; ``bond_params`` maps names to
-        ``k_kcal_mol_a2`` and ``r0_a``. Types are deduplicated by exact parameter
-        tuples in first-appearance order, including isotope mass for atoms.
-        Bond orders describe the supplied graph; UFF assignment on the private
-        copy may perceive aromaticity in a Kekulized input representation.
+        ``epsilon_kcal_mol`` and ``mass_amu``. ``bonds`` is a tuple of sorted
+        atom-index pairs in lexicographic order. ``bond_orders`` and
+        ``bond_types`` are aligned tuples. ``bond_params`` maps names to
+        ``k_kcal_mol_a2`` and ``r0_a``. Exact parameter tuples define types
+        in first-appearance order, including isotope mass for atoms.
+        Bond orders describe the supplied graph. UFF assignment on the copy
+        may perceive aromaticity in a Kekulized input representation.
 
         ``angles`` contains ``(first, center, third)`` tuples in center-index
-        order with sorted neighbor pairs; ``angle_types`` is aligned and
+        order with sorted neighbor pairs. ``angle_types`` is aligned and
         ``angle_params`` maps names to ``k_kcal_mol_rad2``, ``theta0_rad`` and
         ``uff_order``. Exact parameter triples define first-appearance types.
 
         ``dihedrals`` contains distinct-index proper torsions, ordered by
-        sorted central bonds and sorted outer neighbors; ``dihedral_types``
+        sorted central bonds and sorted outer neighbors. ``dihedral_types``
         is aligned. ``dihedral_params`` contains ``k_kcal_mol``, ``n``, ``d``
         and ``phi0_rad=0.0``. Each getter barrier is divided by the number of
         eligible torsions around its central bond, including zero-barrier
-        terms. Exact barrier/periodicity/sign tuples define the types.
+        terms. Exact tuples of barrier, periodicity and sign define the types.
 
         ``r_min_a`` is the UFF minimum-energy distance in angstroms, not a
         Lennard-Jones sigma. Bond energy is ``0.5 * k * (r - r0)**2`` in
-        kcal/mol for distances in angstroms. No unit scaling, force creation,
-        coordinate extraction or improper terms are performed.
+        kcal/mol for distances in angstroms. The function does not scale units,
+        create forces, extract coordinates or assign improper terms.
 
-        Angles describe the frozen AA-DPD harmonic surrogate, with energy
+        Angles use the frozen AA-DPD harmonic approximation, with energy
         ``0.5 * bonded_scale * k * (theta - theta0)**2``. The bonded scale is
         not applied here. ``uff_order`` records provenance only. SP2 small-ring
-        targets are adjusted while retaining the getter force constant; this
-        is not full-UFF small-ring curvature. Angle-bearing SP3D and SP3D2
-        centers require geometry-specific targets and are unsupported.
+        targets change but keep the getter force constant. These targets do
+        not reproduce the full UFF curvature for small rings. Angle-bearing SP3D
+        and SP3D2 centers require geometry-specific targets and are unsupported.
 
         Proper torsion energy is ``0.5 * bonded_scale * k *
         (1 + d*cos(n*phi))``. No scaling or extra factor of two is applied.

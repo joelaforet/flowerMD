@@ -19,16 +19,16 @@ class AllAtomDPD(BaseHOOMDForcefield):
     ----------
     topology : gmso.Topology
         Assigned atom and bonded potentials with explicit units. Supported
-        bonded forms are harmonic bonds/angles and scalar HOOMD periodic
-        proper torsions. Expressions and variables identify forms, not names.
-        Coordinates, topology, potentials and their units are not modified.
+        bonded forms are harmonic bonds and angles, and scalar HOOMD periodic
+        proper torsions. The class identifies forms by their expressions and
+        variables. It preserves coordinates, topology, potentials and units.
     repulsion, gamma : float
         Nonnegative nominal DPD coefficients under fixed references. Repulsion
-        has energy/length units; gamma has mass/time units, where time is
-        sqrt(mass * length**2 / energy).
+        has units of energy divided by length. Gamma has units of mass divided
+        by time, where time is ``sqrt(mass * length**2 / energy)``.
     kT, r_cut, bonded_scale : float
         Positive thermal energy in kcal/mol, cutoff in angstroms and
-        dimensionless bonded multiplier. Scaling is applied exactly once.
+        dimensionless bonded multiplier. The class applies scaling exactly once.
     epsilon_weighting : bool, default True
         Weight pairs using assigned AtomType epsilon quantities. Uniform mode
         reads neither epsilon nor sigma.
@@ -38,22 +38,24 @@ class AllAtomDPD(BaseHOOMDForcefield):
     epsilon_reference : float, optional
         Positive reference in kcal/mol, defaulting to the largest epsilon.
         Omit in uniform mode. Zero epsilon disables repulsion and thermostat
-        coupling for that type; all-zero epsilons require an explicit reference.
+        coupling for that type. All-zero epsilons require an explicit reference.
     include_bonds, include_angles, include_torsions, include_impropers : bool
-        Defaults are True. Disabled recognized potentials still validate.
-        No improper backend is implemented: enabled UFF inversions raise an
-        explicit error. Retained untyped impropers may be explicitly disabled.
+        Defaults are True. The class validates recognized potentials even when
+        disabled. It has no improper force backend. Enabled UFF inversions
+        raise an explicit error. Set include_impropers=False to retain
+        untyped impropers without constructing their forces.
 
     Notes
     -----
     Fresh references are 1 angstrom, 1 kcal/mol and 1 amu. The neighbor-list
-    buffer is 0.4 angstrom, with bond/angle/dihedral exclusions independent of
-    ablations. No LJ, Coulomb or implicit improper substitution is performed.
+    buffer is 0.4 angstrom. Bond, angle and dihedral exclusions remain when
+    their forces are disabled. The class does not add Lennard-Jones or Coulomb
+    forces, or substitute a different improper form.
     Scalar periodic coefficients may be signed, as fitted force fields require.
 
     ``type_labels`` maps actual potential objects to backend labels separately
     for sites, bonds, angles, dihedrals and impropers, in first-occurrence order.
-    A None improper key labels explicitly disabled untyped topology only.
+    A None improper key labels untyped impropers only when explicitly disabled.
     ``disabled_term_counts`` and ``untyped_improper_count`` report omissions.
     Frame construction must use these same maps, ordered GMSO connections and
     site indices as particle tags. Rebuild frames and forces after assignments
