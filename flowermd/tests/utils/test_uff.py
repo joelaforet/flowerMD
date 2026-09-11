@@ -35,6 +35,9 @@ class TestUFFAtomsAndBonds:
             "angles",
             "angle_types",
             "angle_params",
+            "dihedrals",
+            "dihedral_types",
+            "dihedral_params",
         }
         assert isinstance(result["particle_types"], tuple)
         assert len(result["particle_types"]) == mol.GetNumAtoms()

@@ -1,4 +1,4 @@
-"""Internal UFF atom, bond and harmonic-angle surrogate parameters."""
+"""Internal UFF atom and bonded parameters for the frozen AA-DPD protocol."""
 
 import math
 from itertools import combinations
@@ -31,10 +31,17 @@ def extract_uff_parameters(molecule):
         ``angle_params`` maps names to ``k_kcal_mol_rad2``, ``theta0_rad`` and
         ``uff_order``. Exact parameter triples define first-appearance types.
 
+        ``dihedrals`` contains distinct-index proper torsions, ordered by
+        sorted central bonds and sorted outer neighbors; ``dihedral_types``
+        is aligned. ``dihedral_params`` contains ``k_kcal_mol``, ``n``, ``d``
+        and ``phi0_rad=0.0``. Each getter barrier is divided by the number of
+        eligible torsions around its central bond, including zero-barrier
+        terms. Exact barrier/periodicity/sign tuples define the types.
+
         ``r_min_a`` is the UFF minimum-energy distance in angstroms, not a
         Lennard-Jones sigma. Bond energy is ``0.5 * k * (r - r0)**2`` in
         kcal/mol for distances in angstroms. No unit scaling, force creation,
-        coordinate extraction or torsion terms are performed.
+        coordinate extraction or improper terms are performed.
 
         Angles describe the frozen AA-DPD harmonic surrogate, with energy
         ``0.5 * bonded_scale * k * (theta - theta0)**2``. The bonded scale is
@@ -42,6 +49,11 @@ def extract_uff_parameters(molecule):
         targets are adjusted while retaining the getter force constant; this
         is not full-UFF small-ring curvature. Angle-bearing SP3D and SP3D2
         centers require geometry-specific targets and are unsupported.
+
+        Proper torsion energy is ``0.5 * bonded_scale * k *
+        (1 + d*cos(n*phi))``. No scaling or extra factor of two is applied.
+        SP central atoms have no torsion terms. Other torsion-bearing centers
+        must be SP2 or SP3.
     """
     try:
         from rdkit import Chem
@@ -167,6 +179,61 @@ def extract_uff_parameters(molecule):
                 )
             angles.append(group)
             angle_types.append(angle_keys[key])
+
+    dihedrals, dihedral_types, dihedral_params, dihedral_keys = [], [], {}, {}
+    for second, third in bonds:
+        groups = [
+            (first, second, third, fourth)
+            for first in sorted(
+                n.GetIdx() for n in mol.GetAtomWithIdx(second).GetNeighbors()
+            )
+            for fourth in sorted(
+                n.GetIdx() for n in mol.GetAtomWithIdx(third).GetNeighbors()
+            )
+            if len({first, second, third, fourth}) == 4
+        ]
+        if not groups:
+            continue
+        centers = [mol.GetAtomWithIdx(index) for index in (second, third)]
+        if any(
+            atom.GetHybridization() == Chem.HybridizationType.SP
+            for atom in centers
+        ):
+            continue
+        for atom in centers:
+            if atom.GetHybridization() not in (
+                Chem.HybridizationType.SP2,
+                Chem.HybridizationType.SP3,
+            ):
+                raise ValueError(
+                    f"unsupported torsion center {atom.GetIdx()} with "
+                    f"hybridization {atom.GetHybridization()}"
+                )
+        for group in groups:
+            barrier = uff.GetUFFTorsionParams(mol, *group)
+            if barrier is None:
+                raise ValueError(
+                    f"UFF did not assign torsion parameters to atoms {group}"
+                )
+            barrier = float(barrier)
+            if not math.isfinite(barrier) or barrier < 0:
+                raise ValueError(
+                    f"UFF barrier for torsion {group} must be finite and nonnegative"
+                )
+            barrier /= len(groups)
+            order, sign = _torsion_form(mol, group, Chem)
+            key = (barrier, order, sign)
+            if key not in dihedral_keys:
+                name = f"uff_torsion_{len(dihedral_keys)}"
+                dihedral_keys[key] = name
+                dihedral_params[name] = {
+                    "k_kcal_mol": barrier,
+                    "n": order,
+                    "d": sign,
+                    "phi0_rad": 0.0,
+                }
+            dihedrals.append(group)
+            dihedral_types.append(dihedral_keys[key])
     return {
         "particle_types": tuple(particle_types),
         "particle_type_params": particle_params,
@@ -177,7 +244,48 @@ def extract_uff_parameters(molecule):
         "angles": tuple(angles),
         "angle_types": tuple(angle_types),
         "angle_params": angle_params,
+        "dihedrals": tuple(dihedrals),
+        "dihedral_types": tuple(dihedral_types),
+        "dihedral_params": dihedral_params,
     }
+
+
+def _torsion_form(mol, group, chem):
+    """Return the frozen proper-torsion periodicity and cosine sign."""
+    first, second, third, fourth = group
+    left, right = (mol.GetAtomWithIdx(index) for index in (second, third))
+    left_hybrid, right_hybrid = (
+        left.GetHybridization(),
+        right.GetHybridization(),
+    )
+    sp2, sp3 = chem.HybridizationType.SP2, chem.HybridizationType.SP3
+    chalcogens = {8, 16, 34, 52, 84}
+    single = mol.GetBondBetweenAtoms(second, third).GetBondTypeAsDouble() == 1.0
+    if left_hybrid == right_hybrid == sp3:
+        if (
+            single
+            and left.GetAtomicNum() in chalcogens
+            and right.GetAtomicNum() in chalcogens
+        ):
+            return 2, 1
+        return 3, 1
+    if left_hybrid == right_hybrid == sp2:
+        return 2, -1
+    if single:
+        tetrahedral, trigonal = (
+            (left, right) if left_hybrid == sp3 else (right, left)
+        )
+        if (
+            tetrahedral.GetAtomicNum() in chalcogens
+            and trigonal.GetAtomicNum() not in chalcogens
+        ):
+            return 2, 1
+        if any(
+            mol.GetAtomWithIdx(index).GetHybridization() == sp2
+            for index in (first, fourth)
+        ):
+            return 3, 1
+    return 6, -1
 
 
 def _angle_order(atom, first, third, mol, chem):
