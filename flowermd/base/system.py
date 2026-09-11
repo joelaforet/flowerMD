@@ -72,7 +72,12 @@ class System(ABC):
         base_units=dict(),
         **kwargs,
     ):
-        self._molecules = check_return_iterable(molecules)
+        # A Compound is iterable over particles, but represents one input type.
+        self._molecules = (
+            [molecules]
+            if isinstance(molecules, mb.Compound)
+            else check_return_iterable(molecules)
+        )
         self.all_molecules = []
         self.gmso_system = None
         self._reference_values = base_units
@@ -110,11 +115,18 @@ class System(ABC):
                         self._hoomd_forcefield.extend(mol_item.force_field)
                 self.n_mol_types += 1
             elif isinstance(mol_item, mb.Compound):
+                self._mol_type_idx.extend(
+                    [self.n_mol_types] * mol_item.n_particles
+                )
                 mol_item.name = str(self.n_mol_types)
                 self.all_molecules.append(mol_item)
+                self.n_mol_types += 1
             elif isinstance(mol_item, List):
                 for sub_mol in mol_item:
                     if isinstance(sub_mol, mb.Compound):
+                        self._mol_type_idx.extend(
+                            [self.n_mol_types] * sub_mol.n_particles
+                        )
                         sub_mol.name = str(self.n_mol_types)
                         self.all_molecules.append(sub_mol)
                     else:

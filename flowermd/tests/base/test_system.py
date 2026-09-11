@@ -2,6 +2,7 @@ import os
 
 import gmso
 import hoomd
+import mbuild as mb
 import numpy as np
 import pytest
 import unyt as u
@@ -21,6 +22,45 @@ from flowermd.tests import BaseTest
 
 
 class TestSystem(BaseTest):
+    @pytest.mark.parametrize(
+        "input_types",
+        [
+            ("raw",),
+            ("group",),
+            ("raw", "flower", "group"),
+            ("flower", "group", "raw"),
+        ],
+    )
+    def test_mbuild_molecule_types(self, input_types, ethane_molecule):
+        molecules = []
+        expected_indices = []
+        expected_molecules = 0
+        for type_index, input_type in enumerate(input_types):
+            if input_type == "flower":
+                molecule = ethane_molecule(n_mols=2)
+                n_particles = molecule.n_particles
+                expected_molecules += 2
+            elif input_type == "group":
+                molecule = [mb.load("CC", smiles=True) for _ in range(2)]
+                n_particles = sum(mol.n_particles for mol in molecule)
+                expected_molecules += 2
+            else:
+                molecule = mb.load("CC", smiles=True)
+                n_particles = molecule.n_particles
+                expected_molecules += 1
+            molecules.append(molecule)
+            expected_indices.extend([type_index] * n_particles)
+
+        system = Pack(molecules=molecules, density=0.1)
+        assert system.n_mol_types == len(input_types)
+        assert system.n_molecules == expected_molecules
+        assert system._mol_type_idx == expected_indices
+        system.apply_forcefield(r_cut=1.0, force_field=OPLS_AA())
+        assert [site.group for site in system.gmso_system.sites] == [
+            str(index) for index in expected_indices
+        ]
+        assert system.gmso_system.is_typed()
+
     def test_single_mol_type(self, benzene_molecule):
         benzene_mols = benzene_molecule(n_mols=3)
         system = Pack(molecules=[benzene_mols], density=0.8)
