@@ -24,7 +24,9 @@ def assign_openff_parameters(
     """Return a typed topology copy and an assignment report.
 
     ``molecule`` is the authoritative explicit-H RDKit graph. ``atom_map`` maps
-    its atom indices bijectively to input GMSO site indices. Undefined stereo,
+    its atom indices bijectively to input GMSO site indices. Each connected
+    component is labeled separately, with its original atom and site indices
+    recorded in the report. Undefined stereo,
     isotopes, typed inputs and unsupported parameter forms raise errors.
     Site metadata, coordinates, box and explicit charges survive the copy.
     OpenFF supplies physical masses. No partial charges or forces are created.
@@ -81,28 +83,47 @@ def assign_openff_parameters(
     # them also avoids false stereo centers caused by distinct mapped H atoms.
     for atom in mol.GetAtoms():
         atom.SetAtomMapNum(0)
-    offmol = Molecule.from_rdkit(
-        mol, allow_undefined_stereo=False, hydrogens_are_explicit=True
-    )
     count = mol.GetNumAtoms()
-    off_edges = {
-        _canonical((b.atom1_index, b.atom2_index)) for b in offmol.bonds
-    }
+    fragment_indices = []
+    fragments = Chem.GetMolFrags(
+        mol, asMols=True, fragsMolAtomMapping=fragment_indices
+    )
+    if sorted(i for group in fragment_indices for i in group) != list(
+        range(count)
+    ):
+        raise ValueError("RDKit fragments do not partition the original atoms")
+    offmols = []
+    original_atoms = {}
+    for fragment, indices in zip(fragments, fragment_indices):
+        if len(Chem.GetMolFrags(fragment)) != 1:
+            raise ValueError("RDKit returned a disconnected fragment")
+        offmol = Molecule.from_rdkit(
+            fragment, allow_undefined_stereo=False, hydrogens_are_explicit=True
+        )
+        off_edges = {
+            _canonical((b.atom1_index, b.atom2_index)) for b in offmol.bonds
+        }
+        fragment_edges = {
+            _canonical((b.GetBeginAtomIdx(), b.GetEndAtomIdx()))
+            for b in fragment.GetBonds()
+        }
+        if (
+            offmol.n_atoms != len(indices)
+            or off_edges != fragment_edges
+            or any(
+                atom.atomic_number != fragment.GetAtomWithIdx(i).GetAtomicNum()
+                or int(atom.formal_charge.m_as("elementary_charge"))
+                != fragment.GetAtomWithIdx(i).GetFormalCharge()
+                for i, atom in enumerate(offmol.atoms)
+            )
+        ):
+            raise ValueError("OpenFF conversion changed atom indices or graph")
+        offmols.append(offmol)
+        original_atoms.update(zip(indices, offmol.atoms))
     mol_edges = {
         _canonical((b.GetBeginAtomIdx(), b.GetEndAtomIdx()))
         for b in mol.GetBonds()
     }
-    if (
-        offmol.n_atoms != count
-        or off_edges != mol_edges
-        or any(
-            a.atomic_number != mol.GetAtomWithIdx(i).GetAtomicNum()
-            or int(a.formal_charge.m_as("elementary_charge"))
-            != mol.GetAtomWithIdx(i).GetFormalCharge()
-            for i, a in enumerate(offmol.atoms)
-        )
-    ):
-        raise ValueError("OpenFF conversion changed atom indices or graph")
     _validate_graph(topology, mol, atom_map, mol_edges)
     resource = (
         _resource_path(force_field)
@@ -137,7 +158,29 @@ def assign_openff_parameters(
             raise ValueError(
                 f"unsupported {handler} potential {ff[handler].potential}"
             )
-    labels = ff.label_molecules(offmol.to_topology())[0]
+    labels = {name: {} for name in (*forms, "Constraints")}
+    for offmol, indices in zip(offmols, fragment_indices):
+        component_labels = ff.label_molecules(offmol.to_topology())
+        if len(component_labels) != 1:
+            raise ValueError(
+                "expected exactly one OpenFF component label dictionary"
+            )
+        for name in labels:
+            for group, parameter in component_labels[0].get(name, {}).items():
+                if any(
+                    not isinstance(i, Integral)
+                    or isinstance(i, bool)
+                    or i < 0
+                    or i >= len(indices)
+                    for i in group
+                ):
+                    raise ValueError(
+                        "OpenFF label contains an invalid component atom index"
+                    )
+                mapped = tuple(indices[i] for i in group)
+                if mapped in labels[name]:
+                    raise ValueError(f"duplicate mapped {name} assignment")
+                labels[name][mapped] = parameter
     neighbors = {i: set() for i in range(count)}
     for a, b in mol_edges:
         neighbors[a].add(b)
@@ -172,7 +215,8 @@ def assign_openff_parameters(
     sites = list(result.sites)
     templates = PotentialTemplateLibrary()
     atom_types = {}
-    for i, atom in enumerate(offmol.atoms):
+    for i in range(count):
+        atom = original_atoms[i]
         mass = float(atom.mass.m_as("dalton"))
         parameter = labels["vdW"][(i,)] if assign_nonbonded else None
         cache_key = (parameter.smirks if parameter is not None else None, mass)
@@ -318,6 +362,15 @@ def assign_openff_parameters(
     result.update_topology()
     return result, {
         "source": "OpenFF SMIRNOFF",
+        "component_count": len(fragment_indices),
+        "components": tuple(
+            {
+                "index": index,
+                "original_atom_indices": tuple(indices),
+                "site_indices": tuple(atom_map[i] for i in indices),
+            }
+            for index, indices in enumerate(fragment_indices)
+        ),
         "force_field": str(force_field)
         if isinstance(force_field, (str, Path))
         else "OpenFF ForceField object",
