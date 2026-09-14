@@ -275,6 +275,8 @@ def test_sage_adapter_to_cpu_fourier():
         sum(f.forces for f in forces), expected_forces, atol=1e-9
     )
     assert ff.disabled_term_counts["impropers"] == top.n_impropers
-    assert simulation.state.get_snapshot().dihedrals.N == top.n_dihedrals
-    with pytest.raises(NotImplementedError, match="no improper force backend"):
-        bundle(top, epsilon_weighting=False)
+    assert (
+        simulation.state.get_snapshot().dihedrals.N
+        == top.n_dihedrals + top.n_impropers
+    )
+    assert bundle(top, epsilon_weighting=False).forces_by_category["impropers"]

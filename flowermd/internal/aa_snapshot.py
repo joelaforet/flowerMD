@@ -158,9 +158,8 @@ def create_all_atom_frame(
     that cannot represent half-open wrapped bounds raise an error.
     Inputs and their arrays remain unchanged.
 
-    This frame layout is preparatory. A force bundle must define all combined
-    proper and periodic-improper labels before attaching to its dihedral block.
-    The existing AllAtomDPD bundle does not yet fill those combined labels.
+    AllAtomDPD defines the combined proper and periodic-improper labels for
+    this layout. Other force bundles must also supply every physical label.
     """
     maps, groups = route_all_atom_connections(topology, type_labels=type_labels)
     count = topology.n_sites

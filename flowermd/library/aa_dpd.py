@@ -11,6 +11,7 @@ from gmso.lib.potential_templates import PotentialTemplateLibrary
 
 from flowermd.base.forcefield import BaseHOOMDForcefield
 from flowermd.internal.aa_dpd import _finite_coefficient, dpd_pair_parameters
+from flowermd.internal.aa_snapshot import route_all_atom_connections
 
 
 class AllAtomDPD(BaseHOOMDForcefield):
@@ -21,9 +22,9 @@ class AllAtomDPD(BaseHOOMDForcefield):
     topology : gmso.Topology
         Assigned atom and bonded potentials with explicit units. Supported
         bonded forms are harmonic bonds and angles, scalar HOOMD periodic
-        proper torsions, and native periodic proper Fourier arrays. The class
-        identifies forms by their expressions and variables. It preserves
-        coordinates, topology, potentials and units.
+        proper torsions, and native periodic proper and improper Fourier arrays.
+        The class identifies forms by their expressions and variables.
+        It preserves coordinates, topology, potentials and units.
     repulsion, gamma : float
         Nonnegative nominal DPD coefficients under fixed references. Repulsion
         has units of energy divided by length. Gamma has units of mass divided
@@ -43,9 +44,9 @@ class AllAtomDPD(BaseHOOMDForcefield):
         coupling for that type. All-zero epsilons require an explicit reference.
     include_bonds, include_angles, include_torsions, include_impropers : bool
         Defaults are True. The class validates recognized potentials even when
-        disabled. It has no improper force backend. Enabled UFF inversions
-        raise an explicit error. Set include_impropers=False to retain
-        untyped impropers without constructing their forces.
+        disabled. Enabled UFF inversions raise an explicit error. Set
+        include_impropers=False to retain untyped impropers without
+        constructing their forces.
 
     Notes
     -----
@@ -63,6 +64,11 @@ class AllAtomDPD(BaseHOOMDForcefield):
     ``type_labels`` maps actual potential objects to backend labels separately
     for sites, bonds, angles, dihedrals and impropers, in first-occurrence order.
     A None improper key labels untyped impropers only when explicitly disabled.
+    ``forces_by_category`` contains tuples under bonds, angles, dihedrals,
+    impropers and pair. ``hoomd_forces`` flattens them in that order. Proper
+    and improper periodic forces share the physical dihedral block, with zero
+    coefficients for the other category. Improper groups retain their exact
+    center-first order through :func:`create_all_atom_frame`.
     ``disabled_term_counts`` and ``untyped_improper_count`` report omissions.
     Frame construction must use these same maps, ordered GMSO connections and
     site indices as particle tags. Rebuild frames and forces after assignments
@@ -129,7 +135,8 @@ class AllAtomDPD(BaseHOOMDForcefield):
             epsilon_reference=epsilon_reference,
         )
         templates = PotentialTemplateLibrary()
-        forces = []
+        converted_categories = {}
+        force_classes = {}
         site_indices = {
             site: index for index, site in enumerate(topology.sites)
         }
@@ -152,7 +159,12 @@ class AllAtomDPD(BaseHOOMDForcefield):
                 hoomd.md.dihedral.Periodic,
                 "HOOMDPeriodicDihedralPotential",
             ),
-            ("impropers", include_impropers, None, None),
+            (
+                "impropers",
+                include_impropers,
+                hoomd.md.dihedral.Periodic,
+                "PeriodicImproperPotential",
+            ),
         ):
             connections = tuple(getattr(topology, category))
             labels = _labels(
@@ -177,16 +189,6 @@ class AllAtomDPD(BaseHOOMDForcefield):
                     if not enabled and category == "impropers":
                         continue
                     raise ValueError(f"{location} require assigned potentials")
-                if category == "impropers":
-                    if enabled:
-                        if potential.tags.get("form") == "uff_inversion":
-                            raise NotImplementedError(
-                                f"{location}: native UFF inversion requires its Wilson out-of-plane force backend; explicitly disable impropers for an ablation"
-                            )
-                        raise NotImplementedError(
-                            f"{location}: no improper force backend is implemented for this assigned form"
-                        )
-                    continue
                 candidates = [template_name]
                 if category == "dihedrals":
                     candidates.append("PeriodicTorsionPotential")
@@ -205,6 +207,14 @@ class AllAtomDPD(BaseHOOMDForcefield):
                 )
                 if matched is None:
                     if enabled:
+                        if category == "impropers":
+                            if potential.tags.get("form") == "uff_inversion":
+                                raise NotImplementedError(
+                                    f"{location}: native UFF inversion requires its Wilson out-of-plane force backend; explicitly disable impropers for an ablation"
+                                )
+                            raise NotImplementedError(
+                                f"{location}: no improper force backend is implemented for this assigned form"
+                            )
                         raise ValueError(
                             f"unsupported {location} expression or independent variables for {potential.name}"
                         )
@@ -212,23 +222,43 @@ class AllAtomDPD(BaseHOOMDForcefield):
                 try:
                     converted[label] = (
                         _periodic_parameters(potential, scale)
-                        if matched == "PeriodicTorsionPotential"
+                        if matched
+                        in (
+                            "PeriodicTorsionPotential",
+                            "PeriodicImproperPotential",
+                        )
                         else [_bonded_parameters(potential, category, scale)]
                     )
                 except ValueError as error:
                     raise ValueError(f"{location}: {error}") from error
-            if enabled and converted:
+            converted_categories[category] = converted if enabled else {}
+            force_classes[category] = force_class
+        physical_labels, _ = route_all_atom_connections(
+            topology, type_labels=self.type_labels
+        )
+        self.forces_by_category = {}
+        for category, converted in converted_categories.items():
+            category_forces = []
+            if converted:
+                periodic = category in ("dihedrals", "impropers")
+                labels = (
+                    physical_labels["dihedrals"]
+                    if periodic
+                    else self.type_labels[category]
+                )
                 for component in range(
                     max(len(values) for values in converted.values())
                 ):
-                    force = force_class()
-                    for label, values in converted.items():
+                    force = force_classes[category]()
+                    for label in labels.values():
+                        values = converted.get(label, [])
                         force.params[label] = (
                             values[component]
                             if component < len(values)
                             else {"k": 0.0, "n": 1, "d": 1, "phi0": 0.0}
                         )
-                    forces.append(force)
+                    category_forces.append(force)
+            self.forces_by_category[category] = tuple(category_forces)
         neighbor_list = hoomd.md.nlist.Cell(
             buffer=0.4, exclusions=("bond", "angle", "dihedral")
         )
@@ -239,7 +269,12 @@ class AllAtomDPD(BaseHOOMDForcefield):
         )
         for names, values in pair_parameters.items():
             pair.params[names] = {"A": values["A"]} if conservative else values
-        forces.append(pair)
+        self.forces_by_category["pair"] = (pair,)
+        forces = [
+            force
+            for category in self.forces_by_category.values()
+            for force in category
+        ]
         self.reference_values = {
             "length": 1.0 * u.angstrom,
             "energy": 1.0 * u.kcal / u.mol,

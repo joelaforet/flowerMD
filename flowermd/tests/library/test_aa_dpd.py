@@ -9,6 +9,7 @@ import unyt as u
 from gmso.lib.potential_templates import PotentialTemplateLibrary
 
 from flowermd.base.forcefield import BaseHOOMDForcefield
+from flowermd.internal.aa_snapshot import route_all_atom_connections
 from flowermd.internal.uff_gmso import assign_uff_parameters
 from flowermd.library import AllAtomDPD
 from flowermd.tests.utils.test_uff_gmso import inputs
@@ -76,15 +77,18 @@ def evaluate(top, ff, positions):
     snapshot.particles.position[:] = positions
     snapshot.particles.mass[:] = 1
     indices = {site: index for index, site in enumerate(top.sites)}
+    physical_labels, routed = route_all_atom_connections(
+        top, type_labels=ff.type_labels
+    )
     for category in ("bonds", "angles", "dihedrals", "impropers"):
-        connections = tuple(getattr(top, category))
+        connections = routed[category]
         block = getattr(snapshot, category)
         block.N = len(connections)
         if connections:
-            block.types = list(ff.type_labels[category].values())
+            block.types = list(physical_labels[category].values())
             block.typeid[:] = [
                 block.types.index(
-                    ff.type_labels[category][item.connection_type]
+                    physical_labels[category][item.connection_type]
                 )
                 for item in connections
             ]
