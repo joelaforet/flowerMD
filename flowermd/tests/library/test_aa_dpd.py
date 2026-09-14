@@ -287,8 +287,7 @@ class TestAllAtomDPD:
         assert off.untyped_improper_count == partial.n_impropers
         assert off.disabled_term_counts["impropers"] == partial.n_impropers
         native, _ = assign_uff_parameters(raw, mol, atom_map=mapping)
-        with pytest.raises(NotImplementedError, match="Wilson out-of-plane"):
-            bundle(native)
+        assert bundle(native).forces_by_category["impropers"]
         assert (
             bundle(native, include_impropers=False).untyped_improper_count == 0
         )

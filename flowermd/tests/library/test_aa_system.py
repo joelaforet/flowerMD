@@ -237,8 +237,8 @@ def test_reapplication_and_atomic_failure(monkeypatch):
         system.dpd_forcefield,
     )
     before = system.assignment_report
-    with pytest.raises(NotImplementedError, match="Wilson"):
-        apply(system, bonded="uff")
+    with pytest.raises(ValueError, match="positive"):
+        apply(system, bonded="uff", bonded_scale=0)
     assert (
         system.hoomd_snapshot is original_frame
         and system.dpd_forcefield is original_bundle
@@ -361,7 +361,7 @@ def test_public_simulation_zero_step_and_gsd_export(tmp_path, bonded):
     apply(
         system,
         bonded=bonded,
-        include_impropers=bonded != "uff",
+        include_impropers=True,
         conservative=True,
         repulsion=0,
     )

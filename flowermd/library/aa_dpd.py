@@ -12,6 +12,7 @@ from gmso.lib.potential_templates import PotentialTemplateLibrary
 from flowermd.base.forcefield import BaseHOOMDForcefield
 from flowermd.internal.aa_dpd import _finite_coefficient, dpd_pair_parameters
 from flowermd.internal.aa_snapshot import route_all_atom_connections
+from flowermd.internal.uff_inversion import UFFInversionForce, is_uff_inversion
 
 
 class AllAtomDPD(BaseHOOMDForcefield):
@@ -22,7 +23,8 @@ class AllAtomDPD(BaseHOOMDForcefield):
     topology : gmso.Topology
         Assigned atom and bonded potentials with explicit units. Supported
         bonded forms are harmonic bonds and angles, scalar HOOMD periodic
-        proper torsions, and native periodic proper and improper Fourier arrays.
+        proper torsions, native periodic proper and improper Fourier arrays,
+        and native UFF out-of-plane bending using the Wilson coordinate.
         The class identifies forms by their expressions and variables.
         It preserves coordinates, topology, potentials and units.
     repulsion, gamma : float
@@ -44,9 +46,9 @@ class AllAtomDPD(BaseHOOMDForcefield):
         coupling for that type. All-zero epsilons require an explicit reference.
     include_bonds, include_angles, include_torsions, include_impropers : bool
         Defaults are True. The class validates recognized potentials even when
-        disabled. Enabled UFF inversions raise an explicit error. Set
-        include_impropers=False to retain untyped impropers without
-        constructing their forces.
+        disabled. UFF inversions execute on a single CPU rank with a 3D
+        orthorhombic box. Set include_impropers=False to retain untyped
+        impropers without constructing their forces.
 
     Notes
     -----
@@ -135,6 +137,7 @@ class AllAtomDPD(BaseHOOMDForcefield):
             epsilon_reference=epsilon_reference,
         )
         templates = PotentialTemplateLibrary()
+        inversion_parameters = {}
         converted_categories = {}
         force_classes = {}
         site_indices = {
@@ -189,6 +192,29 @@ class AllAtomDPD(BaseHOOMDForcefield):
                     if not enabled and category == "impropers":
                         continue
                     raise ValueError(f"{location} require assigned potentials")
+                if category == "impropers" and is_uff_inversion(potential):
+                    try:
+                        k = _quantity(potential, "k", "kcal/mol")
+                        scaled = k * scale
+                        if (
+                            k < 0
+                            or not math.isfinite(scaled)
+                            or (k != 0 and scaled == 0)
+                        ):
+                            raise ValueError(
+                                "UFF inversion stiffness must be nonnegative and fit float range after scaling"
+                            )
+                        values = (
+                            scaled,
+                            *(
+                                _quantity(potential, name, "dimensionless")
+                                for name in ("c0", "c1", "c2")
+                            ),
+                        )
+                        inversion_parameters[potential] = values
+                    except ValueError as error:
+                        raise ValueError(f"{location}: {error}") from error
+                    continue
                 candidates = [template_name]
                 if category == "dihedrals":
                     candidates.append("PeriodicTorsionPotential")
@@ -208,10 +234,6 @@ class AllAtomDPD(BaseHOOMDForcefield):
                 if matched is None:
                     if enabled:
                         if category == "impropers":
-                            if potential.tags.get("form") == "uff_inversion":
-                                raise NotImplementedError(
-                                    f"{location}: native UFF inversion requires its Wilson out-of-plane force backend; explicitly disable impropers for an ablation"
-                                )
                             raise NotImplementedError(
                                 f"{location}: no improper force backend is implemented for this assigned form"
                             )
@@ -236,6 +258,27 @@ class AllAtomDPD(BaseHOOMDForcefield):
         physical_labels, _ = route_all_atom_connections(
             topology, type_labels=self.type_labels
         )
+        inversion_groups, inversion_values = [], []
+        edges = {
+            frozenset(site_indices[s] for s in bond.connection_members)
+            for bond in topology.bonds
+        }
+        for connection in topology.impropers:
+            if connection.improper_type not in inversion_parameters:
+                continue
+            group = tuple(
+                site_indices[s] for s in connection.connection_members
+            )
+            if any(
+                frozenset((group[0], outer)) not in edges for outer in group[1:]
+            ):
+                raise ValueError(
+                    f"UFF inversion at sites {group} requires a center-first star bond graph"
+                )
+            inversion_groups.append(group)
+            inversion_values.append(
+                inversion_parameters[connection.improper_type]
+            )
         self.forces_by_category = {}
         for category, converted in converted_categories.items():
             category_forces = []
@@ -258,6 +301,16 @@ class AllAtomDPD(BaseHOOMDForcefield):
                             else {"k": 0.0, "n": 1, "d": 1, "phi0": 0.0}
                         )
                     category_forces.append(force)
+            if (
+                category == "impropers"
+                and include_impropers
+                and inversion_groups
+            ):
+                category_forces.append(
+                    UFFInversionForce(
+                        inversion_groups, inversion_values, topology.n_sites
+                    )
+                )
             self.forces_by_category[category] = tuple(category_forces)
         neighbor_list = hoomd.md.nlist.Cell(
             buffer=0.4, exclusions=("bond", "angle", "dihedral")

@@ -155,7 +155,8 @@ class AllAtomSystem(mbuildSystem):
         Its default resource is openff-2.3.0.offxml. sage fixes that resource
         and rejects conflicting inputs. OpenFF vdW assignment follows
         epsilon_weighting. UFF assigns native inversions even when their
-        forces are disabled; enabled UFF inversions remain unsupported.
+        forces are disabled. UFF inversion execution supports a single CPU rank
+        with a 3D orthorhombic box.
 
         Coefficients, units, strict boolean ablations and weighting follow
         AllAtomDPD. Disabled terms preserve groups and pair exclusions.
