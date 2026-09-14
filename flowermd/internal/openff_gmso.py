@@ -13,7 +13,7 @@ import unyt as u
 from gmso.lib.potential_templates import PotentialTemplateLibrary
 
 
-def assign_sage_parameters(
+def assign_openff_parameters(
     topology,
     molecule,
     *,
@@ -30,10 +30,11 @@ def assign_sage_parameters(
     OpenFF supplies physical masses. No partial charges or forces are created.
 
     ``force_field`` accepts an OFFXML resource name, path or OpenFF ForceField.
-    Public Toolkit labels supply harmonic bonds and angles and native periodic
-    proper and improper Fourier arrays. Signed coefficients are divided by
-    idivf exactly once. Improper members follow the exact center-first trefoil
-    order and use that ordered periodic dihedral coordinate.
+    The adapter supports harmonic bonds and angles and periodic proper and
+    improper Fourier arrays through public Toolkit labels. Support depends on
+    these parameter forms, not the force-field generation. Signed coefficients
+    are divided by idivf exactly once. Improper members follow the exact
+    center-first trefoil order and use that ordered periodic dihedral coordinate.
     Constraints remain flexible bonds and their matches appear in the report.
 
     False ``assign_nonbonded`` skips the vdW handler and parameter consumption.
@@ -41,7 +42,7 @@ def assign_sage_parameters(
     True stores sigma and epsilon without creating Lennard-Jones forces.
     Derived connections are reconciled with assigned terms. Matching objects
     retain metadata; unassigned objects are removed unless restrained.
-    This adapter does not provide Fourier-array or improper force execution.
+    This adapter assigns parameters; force execution belongs to the consumer.
     """
     from openff.toolkit import ForceField, Molecule
     from rdkit import Chem, rdBase
@@ -55,7 +56,9 @@ def assign_sage_parameters(
         or any(c.connection_type is not None for c in topology.connections)
         or topology.pairpotential_types
     ):
-        raise ValueError("Sage assignment requires an untyped topology")
+        raise ValueError(
+            "OpenFF SMIRNOFF assignment requires an untyped topology"
+        )
     if not isinstance(molecule, Chem.Mol) or molecule.GetNumAtoms() == 0:
         raise ValueError("molecule must be a nonempty RDKit molecule")
     mol = Chem.Mol(molecule)
@@ -171,9 +174,12 @@ def assign_sage_parameters(
             sites[atom_map[i]].mass = atom_type.mass.copy()
             continue
         kwargs = dict(
-            name=f"sage_atom_{len(atom_types)}",
+            name=f"openff_atom_{len(atom_types)}",
             mass=_quantity(atom.mass, "dalton", u.amu),
-            tags={"source": "Sage", "nonbonded_assigned": assign_nonbonded},
+            tags={
+                "source": "OpenFF SMIRNOFF",
+                "nonbonded_assigned": assign_nonbonded,
+            },
         )
         if assign_nonbonded:
             parameter = labels["vdW"][(i,)]
@@ -237,7 +243,7 @@ def assign_sage_parameters(
                     f"unsupported fractional bond-order interpolation in {label}"
                 )
             tags = {
-                "source": "Sage",
+                "source": "OpenFF SMIRNOFF",
                 "parameter_id": parameter.id,
                 "smirks": parameter.smirks,
             }
@@ -274,7 +280,7 @@ def assign_sage_parameters(
                 potentials[parameter.smirks] = type_cls.from_template(
                     templates[template],
                     params,
-                    name=f"sage_{label}_{parameter.id}",
+                    name=f"openff_{label}_{parameter.id}",
                     tags=tags,
                 )
             potential = potentials[parameter.smirks]
@@ -303,7 +309,7 @@ def assign_sage_parameters(
         ]
     result.update_topology()
     return result, {
-        "source": "Sage",
+        "source": "OpenFF SMIRNOFF",
         "force_field": str(force_field)
         if isinstance(force_field, (str, Path))
         else "OpenFF ForceField object",
@@ -357,7 +363,7 @@ def _resource_path(source):
 def _quantity(value, unit_name, unit):
     numeric = np.asarray(value.m_as(unit_name), dtype=float)
     if not np.all(np.isfinite(numeric)):
-        raise ValueError("Sage parameters must be finite")
+        raise ValueError("OpenFF SMIRNOFF parameters must be finite")
     return u.unyt_array(numeric, unit)
 
 

@@ -1,7 +1,9 @@
-"""Check native Sage assignment against public Toolkit and OpenMM results."""
+"""Check native OpenFF assignment against public Toolkit and OpenMM results."""
 
+import hashlib
 import json
 from copy import deepcopy
+from pathlib import Path
 
 import gmso
 import numpy as np
@@ -9,16 +11,17 @@ import pytest
 import sympy
 import unyt as u
 
-from flowermd.internal.sage_gmso import assign_sage_parameters
+from flowermd.internal.openff_gmso import assign_openff_parameters
 from flowermd.tests.utils.test_uff_gmso import groups, inputs
 
 openff = pytest.importorskip("openff.toolkit")
 Chem = pytest.importorskip("rdkit.Chem")
 unit = pytest.importorskip("openff.units").unit
+RESOURCES = ("openff-1.3.1.offxml", "openff-2.3.0.offxml")
 
 
 def assign(topology, molecule, atom_map, **kwargs):
-    return assign_sage_parameters(
+    return assign_openff_parameters(
         topology, molecule, atom_map=atom_map, **kwargs
     )
 
@@ -28,15 +31,90 @@ def labels(molecule, force_field):
     return offmol, force_field.label_molecules(offmol.to_topology())[0]
 
 
-def test_native_copy_coverage_metadata_and_epsilon():
+@pytest.mark.parametrize("resource", RESOURCES)
+@pytest.mark.parametrize("assign_nonbonded", [True, False])
+def test_resource_path_and_object_equivalence(resource, assign_nonbonded):
+    from openff.toolkit.typing.engines.smirnoff import (
+        get_available_force_fields,
+    )
+
+    path = next(
+        Path(p)
+        for p in get_available_force_fields(full_paths=True)
+        if Path(p).name == resource
+    )
+    topology, molecule, atom_map = inputs("CC(=O)NC")
+    ff = openff.ForceField(resource)
+    before = ff.to_string()
+    outputs = [
+        assign(
+            topology,
+            molecule,
+            atom_map,
+            force_field=source,
+            assign_nonbonded=assign_nonbonded,
+        )
+        for source in (resource, path, ff)
+    ]
+    assert ff.to_string() == before
+    expected, name_report = outputs[0]
+    for result, report in outputs:
+        assert report["source"] == "OpenFF SMIRNOFF"
+        assert report["assign_nonbonded"] is assign_nonbonded
+        for kind in ("sites", "bonds", "angles", "dihedrals", "impropers"):
+            if kind != "sites":
+                assert groups(result, kind) == groups(expected, kind)
+            for actual, original in zip(
+                getattr(result, kind), getattr(expected, kind)
+            ):
+                if kind == "sites":
+                    assert actual.mass == original.mass
+                    actual, original = actual.atom_type, original.atom_type
+                else:
+                    actual, original = (
+                        actual.connection_type,
+                        original.connection_type,
+                    )
+                assert actual.name == original.name
+                assert actual.tags == original.tags
+                assert actual.expression == original.expression
+                assert (
+                    actual.independent_variables
+                    == original.independent_variables
+                )
+                assert actual.parameters.keys() == original.parameters.keys()
+                for key, value in actual.parameters.items():
+                    np.testing.assert_array_equal(
+                        value, original.parameters[key]
+                    )
+                    assert value.units == original.parameters[key].units
+    path_report = outputs[1][1]
+    object_report = outputs[2][1]
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    for report in (name_report, path_report):
+        assert report["resource_sha256"] == digest
+        assert report["resource_hash_scope"] == "raw OFFXML bytes"
+    assert path_report["force_field"] == str(path)
+    assert object_report["force_field"] == "OpenFF ForceField object"
+    assert object_report["resource_sha256"] is None
+    assert object_report["resource_hash_scope"] == "no resolved OFFXML resource"
+    if resource == "openff-2.3.0.offxml":
+        _, default_report = assign(
+            topology, molecule, atom_map, assign_nonbonded=assign_nonbonded
+        )
+        assert default_report == name_report
+
+
+@pytest.mark.parametrize("resource", RESOURCES)
+def test_native_copy_coverage_metadata_and_epsilon(resource):
     original, molecule, atom_map = inputs("CC(=O)NC")
     original.sites[0].charge = 0.25 * u.elementary_charge
     original.sites[0].group = "chain"
     original.bonds[0].name = "retained bond"
     original.angles[0].name = "retained angle"
     before = molecule.ToBinary(Chem.PropertyPickleOptions.AllProps)
-    result, report = assign(original, molecule, atom_map)
-    ff = openff.ForceField("openff-2.3.0.offxml")
+    result, report = assign(original, molecule, atom_map, force_field=resource)
+    ff = openff.ForceField(resource)
     offmol, raw = labels(molecule, ff)
     assert result is not original
     assert not original.is_typed()
@@ -50,10 +128,13 @@ def test_native_copy_coverage_metadata_and_epsilon():
     assert report["assigned_counts"] == dict(
         atoms=12, bonds=11, angles=18, proper_dihedrals=16, impropers=6
     )
-    assert (
-        report["resource_sha256"]
-        == "7a0d7195a4b717e29fe14aa2cf1bc3203e87ce4aef9cc2ef10fb5145b7edcf63"
-    )
+    assert report["source"] == "OpenFF SMIRNOFF"
+    assert report["force_field"] == resource
+    if resource == "openff-2.3.0.offxml":
+        assert (
+            report["resource_sha256"]
+            == "7a0d7195a4b717e29fe14aa2cf1bc3203e87ce4aef9cc2ef10fb5145b7edcf63"
+        )
     assert report["constraint_matches"]
     assert report["constraint_treatment"] == "flexible bonded potentials"
     assert report["charges_parameterized"] is False
@@ -73,6 +154,12 @@ def test_native_copy_coverage_metadata_and_epsilon():
     assert result.sites[0].atom_type is not result.sites[1].atom_type
     for kind in ("sites", "bonds", "angles", "dihedrals", "impropers"):
         assert result.is_fully_typed(group=kind)
+        for item in getattr(result, kind):
+            potential = (
+                item.atom_type if kind == "sites" else item.connection_type
+            )
+            assert potential.name.startswith("openff_")
+            assert potential.tags["source"] == "OpenFF SMIRNOFF"
     assert any(
         len(c.dihedral_type.parameters["k"]) > 1 for c in result.dihedrals
     )
@@ -104,9 +191,10 @@ def test_permutations_and_mapped_input_preservation(smiles):
             assert groups(result, kind) == groups(base, kind)
 
 
-def test_unweighted_never_matches_or_reads_vdw(monkeypatch):
+@pytest.mark.parametrize("resource", RESOURCES)
+def test_unweighted_never_matches_or_reads_vdw(monkeypatch, resource):
     topology, molecule, atom_map = inputs("CC")
-    ff = openff.ForceField("openff-2.3.0.offxml")
+    ff = openff.ForceField(resource)
     handler_type = type(ff["vdW"])
     parameter_type = type(ff["vdW"].parameters[0])
 
@@ -297,11 +385,14 @@ def native_energy(topology, kind, xyz):
     return energy
 
 
-@pytest.mark.parametrize("signed", [False, True])
-def test_independent_openmm_energy_and_cartesian_force_parity(signed):
+@pytest.mark.parametrize(
+    "resource, signed",
+    [(RESOURCES[0], False), (RESOURCES[1], False), (RESOURCES[1], True)],
+)
+def test_independent_openmm_energy_and_cartesian_force_parity(resource, signed):
     mm = pytest.importorskip("openmm")
     topology, molecule, atom_map = inputs("CC(=O)NC")
-    ff = openff.ForceField("openff-2.3.0.offxml")
+    ff = openff.ForceField(resource)
     if signed:
         _, raw = labels(molecule, ff)
         for handler in ("ProperTorsions", "ImproperTorsions"):
@@ -444,7 +535,7 @@ def test_improper_numeric_default_divisor():
 def test_invalid_fourier_data(change, message):
     from types import SimpleNamespace
 
-    from flowermd.internal.sage_gmso import _fourier
+    from flowermd.internal.openff_gmso import _fourier
 
     p = dict(
         k=[1 * unit.kilocalorie_per_mole],
@@ -481,7 +572,7 @@ def test_invalid_epsilon(value):
 def test_fourier_normalization_range(coefficient, divisor):
     from types import SimpleNamespace
 
-    from flowermd.internal.sage_gmso import _fourier
+    from flowermd.internal.openff_gmso import _fourier
 
     parameter = SimpleNamespace(
         k=[coefficient * unit.kilocalorie_per_mole],

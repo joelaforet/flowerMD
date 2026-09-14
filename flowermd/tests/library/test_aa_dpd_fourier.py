@@ -242,11 +242,11 @@ def test_cpu_mixed_fourier_openmm_parity(mirror, scale):
 
 def test_sage_adapter_to_cpu_fourier():
     pytest.importorskip("openff.toolkit")
-    from flowermd.internal.sage_gmso import assign_sage_parameters
+    from flowermd.internal.openff_gmso import assign_openff_parameters
     from flowermd.tests.utils.test_uff_gmso import inputs
 
     raw, molecule, mapping = inputs("CC(=O)NC")
-    top, _ = assign_sage_parameters(
+    top, _ = assign_openff_parameters(
         raw, molecule, atom_map=mapping, assign_nonbonded=False
     )
     ff = bundle(
