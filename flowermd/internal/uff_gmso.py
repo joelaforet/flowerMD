@@ -37,9 +37,16 @@ def assign_uff_parameters(
     -----
     The function assigns native GMSO atom types, harmonic bond and angle
     types, and periodic proper torsion types. Angles use the frozen harmonic
-    approximation to the UFF cosine form. The function converts UFF's
-    minimum-energy distance to Lennard-Jones sigma and stores it on the atom
-    type. It does not create Lennard-Jones forces or apply bonded scaling.
+    model ``0.5*k*(theta-theta0)**2`` rather than full UFF's geometry-dependent
+    trigonometric forms. RDKit supplies the starting angle targets and
+    stiffnesses. Small-ring target overrides retain the getter stiffness and
+    do not reproduce full UFF small-ring curvature. ``uff_order`` is provenance
+    only. The force consumer applies bonded scaling once. See
+    ``extract_uff_parameters`` for supported centers and target rules.
+
+    The function converts UFF's minimum-energy distance to Lennard-Jones sigma
+    and stores it on the atom type. It does not create Lennard-Jones forces
+    or apply bonded scaling.
 
     Isotope masses overwrite copied site masses. Explicit site charges remain.
     The function does not assign charges. Sites without explicit charges use

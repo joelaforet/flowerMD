@@ -43,12 +43,20 @@ def extract_uff_parameters(molecule):
         kcal/mol for distances in angstroms. The function does not scale units,
         create forces, extract coordinates or assign improper terms.
 
-        Angles use the frozen AA-DPD harmonic approximation, with energy
-        ``0.5 * bonded_scale * k * (theta - theta0)**2``. The bonded scale is
-        not applied here. ``uff_order`` records provenance only. SP2 small-ring
-        targets change but keep the getter force constant. These targets do
-        not reproduce the full UFF curvature for small rings. Angle-bearing SP3D
-        and SP3D2 centers require geometry-specific targets and are unsupported.
+        Full UFF angle bending uses geometry-dependent trigonometric forms.
+        The initializer instead retains the frozen harmonic model
+        ``0.5 * k * (theta - theta0)**2``. Its force consumer applies
+        bonded_scale once. This function does not execute the trigonometric
+        energy or apply scaling. The supported OpenFF SMIRNOFF angle handler
+        supplies a harmonic potential directly.
+
+        RDKit's getter supplies the starting target and stiffness. SP2
+        small-ring target overrides retain that stiffness, so they do not
+        reproduce full UFF small-ring curvature. ``uff_order`` records
+        provenance; it does not select an executed expression. See
+        ``_angle_order`` for the target and order rules. Angle-bearing SP3D
+        and SP3D2 centers are unsupported because this adapter lacks their
+        geometry-specific targets.
 
         Proper torsion energy is ``0.5 * bonded_scale * k *
         (1 + d*cos(n*phi))``. No scaling or extra factor of two is applied.
@@ -295,7 +303,20 @@ def _torsion_form(mol, group, chem):
 
 
 def _angle_order(atom, first, third, mol, chem):
-    """Retain the frozen ring-membership precedence and UFF order metadata."""
+    """Return UFF order metadata and an optional frozen angle target.
+
+    SP centers record order 1 and ordinary SP2 centers order 3, with no target
+    override. For an SP2 center in a three-member ring, the target is 60
+    degrees if both neighbors belong to three-member rings and 150 degrees
+    if exactly one does. Four-member ring cases use 90 and 135 degrees.
+    Three-member target overrides take precedence over four-member overrides.
+    Each check tests an atom's ring-size membership, not whether the atoms
+    share one specific ring. Ring overrides record order 0.
+
+    Other accepted centers record order 0 and retain the getter target.
+    Overrides leave the getter stiffness unchanged. The order records
+    provenance only; all accepted angles use the frozen harmonic model.
+    """
     hybridization = atom.GetHybridization()
     if hybridization == chem.HybridizationType.SP:
         return 1, None
