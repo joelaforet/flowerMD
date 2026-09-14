@@ -25,10 +25,10 @@ class TestSystem(BaseTest):
     @pytest.mark.parametrize(
         "input_types",
         [
-            ("raw",),
-            ("group",),
-            ("raw", "flower", "group"),
-            ("flower", "group", "raw"),
+            ("mBuild_SMILES",),
+            ("group_mBuild_SMILES",),
+            ("mBuild_SMILES", "flower", "group_mBuild_SMILES"),
+            ("flower", "group_mBuild_SMILES", "mBuild_SMILES"),
         ],
     )
     def test_mbuild_molecule_types(self, input_types, ethane_molecule):
@@ -40,7 +40,7 @@ class TestSystem(BaseTest):
                 molecule = ethane_molecule(n_mols=2)
                 n_particles = molecule.n_particles
                 expected_molecules += 2
-            elif input_type == "group":
+            elif input_type == "group_mBuild_SMILES":
                 molecule = [mb.load("CC", smiles=True) for _ in range(2)]
                 n_particles = sum(mol.n_particles for mol in molecule)
                 expected_molecules += 2

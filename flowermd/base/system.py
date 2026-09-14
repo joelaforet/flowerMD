@@ -72,7 +72,8 @@ class System(ABC):
         base_units=dict(),
         **kwargs,
     ):
-        # A Compound is iterable over particles, but represents one input type.
+        # A supplied Compound represents one molecule type. Wrap it so its
+        # particle iterator does not become the outer collection of types.
         self._molecules = (
             [molecules]
             if isinstance(molecules, mb.Compound)
@@ -90,7 +91,8 @@ class System(ABC):
         self._ff_kwargs = dict()
         self.auto_scale = False
 
-        # Collecting all molecules
+        # Store one type index per particle, in construction order. A nested
+        # list contains several Compounds that share the same molecule type.
         self.n_mol_types = 0
         self._mol_type_idx = []
         for mol_item in self._molecules:
@@ -502,7 +504,12 @@ class System(ABC):
                     ].gmso_ff
 
     def _assign_site_mol_type_idx(self):
-        """Assign molecule type index to the gmso sites."""
+        """Copy per-particle molecule type indices to string GMSO site groups.
+
+        apply_forcefield matches these groups to its force-field dictionary
+        with match_ff_by="group". Compound names do not replace these per-site
+        assignments.
+        """
         for i, site in enumerate(self.gmso_system.sites):
             site.group = str(self._mol_type_idx[i])
 
