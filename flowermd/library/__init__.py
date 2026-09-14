@@ -2,6 +2,7 @@
 """Library of predefined molecules, recipes and forcefields."""
 
 from .aa_dpd import AllAtomDPD
+from .aa_system import AllAtomSystem
 from .forcefields import (
     GAFF,
     OPLS_AA,
