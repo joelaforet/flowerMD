@@ -72,8 +72,9 @@ class System(ABC):
         base_units=dict(),
         **kwargs,
     ):
-        # A supplied Compound represents one molecule type. Wrap it so its
-        # particle iterator does not become the outer collection of types.
+        # A supplied Compound is one molecule type. Iterating it yields its
+        # particles, so wrap it in a list instead of treating each particle
+        # as a separate molecule type.
         self._molecules = (
             [molecules]
             if isinstance(molecules, mb.Compound)

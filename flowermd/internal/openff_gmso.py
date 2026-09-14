@@ -33,8 +33,16 @@ def assign_openff_parameters(
     The adapter supports harmonic bonds and angles and periodic proper and
     improper Fourier arrays through public Toolkit labels. Support depends on
     these parameter forms, not the force-field generation. Signed coefficients
-    are divided by idivf exactly once. Improper members follow the exact
-    center-first trefoil order and use that ordered periodic dihedral coordinate.
+    are divided by ``idivf`` exactly once.
+
+    For a Toolkit improper match ``(A, C, B, D)``, C is the central atom. The
+    adapter stores three ordered groups: ``(C, A, B, D)``, ``(C, B, D, A)`` and
+    ``(C, D, A, B)``. This three-term arrangement is the trefoil. Each group
+    uses the periodic dihedral coordinate in that exact order. The coefficients
+    include one ``idivf`` division; they are not divided again during execution.
+    Sorting the outer atoms would change the terms. These periodic impropers
+    are distinct from UFF Wilson inversions.
+
     Constraints remain flexible bonds and their matches appear in the report.
 
     False ``assign_nonbonded`` skips the vdW handler and parameter consumption.

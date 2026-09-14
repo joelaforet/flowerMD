@@ -56,10 +56,18 @@ class AllAtomDPD(BaseHOOMDForcefield):
     forces, or substitute a different improper form.
     Periodic coefficients may be signed, as fitted force fields require.
     Native periodic torsions accept scalars or aligned nonempty one-dimensional
-    arrays of k, n and phi_eq. Each component uses a separate HOOMD Periodic
-    force with the same connection labels and groups. Missing components use
-    zero stiffness. Native k converts to HOOMD k with a factor of two; existing
-    HOOMD-form scalar potentials keep their original prefactor.
+    arrays of ``k``, ``n`` and ``phi_eq``. These arrays describe a sum of Fourier
+    terms. HOOMD Periodic stores one component per type in each force object,
+    so the consumer uses separate force objects to evaluate the same sum. Each
+    force object can cover many torsion types. Shorter arrays receive zero
+    stiffness for missing components so every force covers the shared labels.
+
+    For example, after ``idivf`` normalization, native ``k=[1.5, 0.25]``
+    kcal/mol, ``n=[1, 3]`` and ``phi_eq=[0, pi]`` rad with ``bonded_scale=1``
+    produce two HOOMD components: ``k=3, n=1, d=1, phi0=0`` and
+    ``k=0.5, n=3, d=1, phi0=pi``. Their energies add to the original Fourier
+    sum. The factor of two accounts for HOOMD's ``k/2`` prefactor. Existing
+    HOOMD-form scalar potentials retain their original prefactor.
 
     ``type_labels`` maps actual potential objects to backend labels separately
     for sites, bonds, angles, dihedrals and impropers, in first-occurrence order.

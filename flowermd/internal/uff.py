@@ -44,6 +44,9 @@ def extract_uff_parameters(molecule):
         create forces, extract coordinates or assign improper terms.
 
         Full UFF angle bending uses geometry-dependent trigonometric forms.
+        See `RDKit's UFF angle expressions
+        <https://github.com/rdkit/rdkit/blob/de8add1e32ff6d3c4e4e406f64b703b662dff1d6/Code/ForceField/UFF/AngleBend.cpp#L190-L221>`_
+        for the implemented functional forms.
         The initializer instead retains the frozen harmonic model
         ``0.5 * k * (theta - theta0)**2``. Its force consumer applies
         bonded_scale once. This function does not execute the trigonometric
