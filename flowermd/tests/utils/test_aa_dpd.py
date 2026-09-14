@@ -191,8 +191,12 @@ class TestEpsilonScaledDPDParameters:
 
     def test_explicit_reference(self):
         pairs = epsilon_scaled_dpd_parameters({"a": 0.25, "b": 1}, 40, 20, 0.5)
-        assert pairs["a", "b"] == {"A": 40, "gamma": 20}
-        assert pairs["b", "b"] == {"A": 80, "gamma": 40}
+        assert pairs["a", "b"] == pytest.approx(
+            {"A": 40, "gamma": 20}, rel=1e-14
+        )
+        assert pairs["b", "b"] == pytest.approx(
+            {"A": 80, "gamma": 40}, rel=1e-14
+        )
 
     def test_frozen_protocol_algebra(self):
         # Frozen fastfire._forces: UFF epsilons, including an explicit
@@ -212,9 +216,37 @@ class TestEpsilonScaledDPDParameters:
         pairs = epsilon_scaled_dpd_parameters({"a": value}, 1250, 200)
         assert pairs["a", "a"] == pytest.approx({"A": 1250, "gamma": 200})
 
-    def test_representable_output_with_extreme_reference(self):
-        pairs = epsilon_scaled_dpd_parameters({"a": 1e300}, 1e-300, 0, 1e-300)
-        assert pairs["a", "a"] == pytest.approx({"A": 1e300, "gamma": 0})
+    @pytest.mark.parametrize(
+        "epsilon,coefficient,reference,message",
+        [
+            (1e300, 1e-300, 1e-300, "exceeds float range"),
+            (1e-300, 1e300, 1e300, "underflows float range"),
+        ],
+    )
+    def test_intermediate_range_rejected_despite_representable_result(
+        self, epsilon, coefficient, reference, message
+    ):
+        with pytest.raises(ValueError, match=message):
+            epsilon_scaled_dpd_parameters(
+                {"a": epsilon}, coefficient, 0, reference
+            )
+
+    @pytest.mark.parametrize(
+        "epsilon,coefficient", [(1e100, 1e300), (1e-100, 1e-300)]
+    )
+    def test_final_result_range(self, epsilon, coefficient):
+        with pytest.raises(ValueError, match="float range"):
+            epsilon_scaled_dpd_parameters({"a": epsilon}, coefficient, 0, 1)
+
+    @pytest.mark.parametrize(
+        "epsilon,reference", [(1e300, 1e-300), (1e-300, 1e300)]
+    )
+    def test_zero_coefficients_skip_intermediate_range(
+        self, epsilon, reference
+    ):
+        assert epsilon_scaled_dpd_parameters(
+            {"a": epsilon}, 0, 0, reference
+        ) == {("a", "a"): {"A": 0, "gamma": 0}}
 
     @pytest.mark.parametrize("repulsion,gamma", [(0, 20), (40, 0), (0, 0)])
     def test_zero_coefficients(self, repulsion, gamma):

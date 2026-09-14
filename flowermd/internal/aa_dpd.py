@@ -115,8 +115,11 @@ def epsilon_scaled_dpd_parameters(
     -----
     This function weights coefficients. It does not construct forces or add
     Lennard-Jones or Coulomb interactions. It takes numeric magnitudes and
-    does not convert units. Nonzero outputs outside the representable float
-    range raise ValueError instead of silently becoming infinity or zero.
+    does not convert units. For nonzero coefficients and epsilons, both
+    normalized epsilon ratios, their geometric-mean factor and the final
+    coefficient must fit in float range.
+    An intermediate outside that range raises ValueError even if the final
+    mathematical result would be representable.
     A zero epsilon produces exactly zero A and gamma for pairs containing
     that type, disabling their conservative repulsion and DPD thermostat
     coupling. The function applies no epsilon floor or fallback.
@@ -169,24 +172,21 @@ def _finite_coefficient(value, name, allow_zero=False):
 def _weighted_coefficient(coefficient, first, second, reference):
     if coefficient == 0 or first == 0 or second == 0:
         return 0.0
-    # Keep powers of two separate so intermediate products cannot overflow
-    # or underflow when the final coefficient is representable.
-    first_mantissa, first_exponent = math.frexp(first)
-    second_mantissa, second_exponent = math.frexp(second)
-    ref_mantissa, ref_exponent = math.frexp(reference)
-    coeff_mantissa, coeff_exponent = math.frexp(coefficient)
-    exponent, remainder = divmod(first_exponent + second_exponent, 2)
-    mantissa = (
-        coeff_mantissa
-        * math.sqrt(first_mantissa * second_mantissa * 2**remainder)
-        / ref_mantissa
-    )
-    try:
-        result = math.ldexp(mantissa, coeff_exponent + exponent - ref_exponent)
-    except OverflowError:
-        raise ValueError(
-            "weighted DPD coefficient exceeds float range"
-        ) from None
+    first_ratio = first / reference
+    second_ratio = second / reference
+    for value in (first_ratio, second_ratio):
+        if not math.isfinite(value):
+            raise ValueError("weighted DPD coefficient exceeds float range")
+        if value == 0:
+            raise ValueError("weighted DPD coefficient underflows float range")
+    factor = math.sqrt(first_ratio) * math.sqrt(second_ratio)
+    if not math.isfinite(factor):
+        raise ValueError("weighted DPD coefficient exceeds float range")
+    if factor == 0:
+        raise ValueError("weighted DPD coefficient underflows float range")
+    result = coefficient * factor
+    if not math.isfinite(result):
+        raise ValueError("weighted DPD coefficient exceeds float range")
     if result == 0:
         raise ValueError("weighted DPD coefficient underflows float range")
     return result
