@@ -10,6 +10,38 @@ from flowermd import CoPolymer, Polymer
 from flowermd.assets import MON_DIR
 
 
+def assemble_polymer_graph(
+    donor, *, connection_pairs, repeats, reflections, cap_policy="hydrogen"
+):
+    """Assemble a finite explicit-H chain graph from a labelled donor.
+
+    The donor is a connected RDKit Mol with one finite undistorted conformer
+    in angstrom. Unique nonzero atom maps label sacrificial cap hydrogens;
+    all other atoms have map zero. Each directed connection pair lists the
+    outgoing cap map on the preceding repeat and the incoming map on the next.
+    All junction bonds are single bonds, added together before sanitization.
+    Multiple pairs support ladder junctions without choosing partners by geometry.
+
+    Supply a positive integer repeat count and an explicit sequence of integer
+    zero/one reflections of the donor z coordinate. Only hydrogen caps are
+    supported. Terminal caps remain; consumed internal caps are removed.
+
+    Return an ordinary RDKit Mol with no conformer and a plain provenance dict.
+    Atom order is repeat-major donor order with consumed caps removed. The
+    provenance owns donor coordinates, cap vectors, atom origins, reverse maps,
+    deletion and junction records, and intended tetrahedral targets. Targets
+    use donor geometry and cap directions before placement, with the frozen
+    normalized-volume and signed-dihedral conventions. Final graph topology
+    determines potential stereocenters and RDKit assigns their chiral tags.
+    No chain coordinates, Compound, box or simulation are constructed.
+    """
+    from flowermd.internal.chemical_assembly import assemble_graph
+
+    return assemble_graph(
+        donor, connection_pairs, repeats, reflections, cap_policy
+    )
+
+
 class PolyEthylene(Polymer):
     """Create a Poly(ethylene) chain.
 

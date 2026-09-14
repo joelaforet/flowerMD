@@ -29,6 +29,7 @@ from .polymers import (
     PEKK_meta,
     PEKK_para,
     PolyEthylene,
+    assemble_polymer_graph,
 )
 from .simulations.tensile import Tensile
 from .surfaces import Graphene
