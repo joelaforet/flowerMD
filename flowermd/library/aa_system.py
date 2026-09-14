@@ -8,12 +8,10 @@ import numpy as np
 import unyt as u
 
 from flowermd.internal.aa_snapshot import create_all_atom_frame
-from flowermd.internal.openff_gmso import (
-    _validate_graph,
-    assign_openff_parameters,
-)
-from flowermd.internal.uff_gmso import assign_uff_parameters
+from flowermd.internal.bonded_assignment import own_bonded_assignment
+from flowermd.internal.openff_gmso import _validate_graph
 from flowermd.library.aa_dpd import AllAtomDPD
+from flowermd.library.bonded_providers import resolve_bonded_provider
 from flowermd.library.systems import mbuildSystem
 
 
@@ -150,13 +148,18 @@ class AllAtomSystem(mbuildSystem):
     ):
         """Assign a fresh topology, force bundle and matching GSD frame.
 
-        bonded selects uff, openff or sage. UFF rejects force_field; openff
-        accepts an OFFXML resource, path or public OpenFF ForceField object.
-        Its default resource is openff-2.3.0.offxml. sage fixes that resource
-        and rejects conflicting inputs. OpenFF vdW assignment follows
-        epsilon_weighting. UFF assigns native inversions even when their
-        forces are disabled. UFF inversion execution supports a single CPU rank
-        with a 3D orthorhombic box.
+        bonded accepts a provider with a callable assign method, such as
+        UFFProvider, OpenFFProvider or SageProvider. Providers assign native
+        GMSO parameters and report their source. Each call receives fresh
+        input copies; returned data is validated and copied before use.
+
+        The strings uff, openff and sage remain supported. force_field only
+        configures string inputs. OpenFF defaults to openff-2.3.0.offxml;
+        sage fixes that resource. OpenFF vdW assignment follows
+        epsilon_weighting. UFF also extracts nonbonded parameters when
+        unweighted, but DPD does not consume them. All known bonded terms are
+        assigned independently of the four execution ablations. UFF inversion
+        execution supports one CPU rank with a 3D orthorhombic box.
 
         Coefficients, units, strict boolean ablations and weighting follow
         AllAtomDPD. Disabled terms preserve groups and pair exclusions.
@@ -164,44 +167,20 @@ class AllAtomSystem(mbuildSystem):
         state. A failed call leaves the preceding configuration usable.
         Successful reapplication creates fresh forces for a new Simulation.
         """
-        if not isinstance(bonded, str) or bonded not in (
-            "uff",
-            "openff",
-            "sage",
-        ):
-            raise ValueError("bonded must be uff, openff or sage")
+        from rdkit import Chem
+
         if not isinstance(epsilon_weighting, bool):
             raise ValueError("epsilon_weighting must be a bool")
-        if bonded == "uff":
-            if force_field is not None:
-                raise ValueError("UFF does not accept an OpenFF force_field")
-            typed, assignment = assign_uff_parameters(
-                self._construction_topology,
-                self._molecule,
-                atom_map=self._atom_map,
-                include_impropers=True,
-            )
-        else:
-            if (
-                bonded == "sage"
-                and force_field is not None
-                and (
-                    not isinstance(force_field, str)
-                    or force_field != "openff-2.3.0.offxml"
-                )
-            ):
-                raise ValueError(
-                    "sage fixes openff-2.3.0.offxml; use bonded='openff' for another force_field"
-                )
-            typed, assignment = assign_openff_parameters(
-                self._construction_topology,
-                self._molecule,
-                atom_map=self._atom_map,
-                force_field="openff-2.3.0.offxml"
-                if force_field is None
-                else force_field,
-                assign_nonbonded=epsilon_weighting,
-            )
+        provider = resolve_bonded_provider(bonded, force_field)
+        result = provider.assign(
+            deepcopy(self._construction_topology),
+            Chem.Mol(self._molecule),
+            atom_map=deepcopy(self._atom_map),
+            assign_nonbonded=epsilon_weighting,
+        )
+        typed, assignment = own_bonded_assignment(
+            result, self._construction_topology, self._molecule, self._atom_map
+        )
         options = dict(
             repulsion=repulsion,
             gamma=gamma,
@@ -239,7 +218,9 @@ class AllAtomSystem(mbuildSystem):
             else None
         )
         report = {
-            "bonded": bonded,
+            "bonded": bonded
+            if isinstance(bonded, str)
+            else f"{type(provider).__module__}.{type(provider).__qualname__}",
             "assignment": assignment,
             "dpd": deepcopy(options),
             "epsilon_source": assignment["source"]

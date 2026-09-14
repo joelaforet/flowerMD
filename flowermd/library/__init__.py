@@ -3,6 +3,7 @@
 
 from .aa_dpd import AllAtomDPD
 from .aa_system import AllAtomSystem
+from .bonded_providers import OpenFFProvider, SageProvider, UFFProvider
 from .forcefields import (
     GAFF,
     OPLS_AA,
