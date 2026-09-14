@@ -22,6 +22,23 @@ flowerMD's design allows for creation of modules where an end-to-end interface i
 
 <img src='docs/images/surface-wetting.png' width='410' height='180'> <img src='docs/images/surface-wetting2.png' width='410' height='180'>
 
+All-atom DPD preparation
+=======================
+
+`AllAtomSystem.apply_dpd` accepts assignment providers and independent bonded
+execution flags. `UFFProvider` uses the frozen harmonic UFF angle surrogate and
+intentionally omits UFF inversion terms because this workflow has no maintained
+out-of-plane bending backend. This is a reduced UFF-based model, not full UFF.
+`OpenFFProvider` retains supported periodic improper terms with their ordered
+SMIRNOFF mapping. It does not substitute the UFF inversion coordinate.
+
+`include_impropers=True` requests execution of supported assigned groups; it does
+not create terms excluded by a provider's policy. Inspect `assignment_report`
+for the assignment source, exact omitted inferred UFF candidate groups, requested
+flags, and separate assigned-group, executed-group and force-object counts.
+Imported native UFF inversion data can be inspected or retained with
+`include_impropers=False`, but cannot execute through the supported force bundle.
+
 Installing flowermd
 ===================
 

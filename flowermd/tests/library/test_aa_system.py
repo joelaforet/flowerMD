@@ -151,7 +151,7 @@ def test_provider_weighting_and_provenance(bonded, weighting):
         system,
         bonded=bonded,
         epsilon_weighting=weighting,
-        include_impropers=bonded != "uff",
+        include_impropers=True,
     )
     assert result is None
     report = system.assignment_report
@@ -168,8 +168,8 @@ def test_provider_weighting_and_provenance(bonded, weighting):
             for s in system.gmso_system.sites
         )
     else:
-        assert report["assignment"]["include_impropers"] is True
-        assert system.gmso_system.n_impropers > 0
+        assert report["assignment"]["include_impropers"] is False
+        assert system.gmso_system.n_impropers == 0
         assert system.dpd_forcefield.forces_by_category["impropers"] == ()
     bundle = system.dpd_forcefield
     pair = bundle.forces_by_category["pair"][0]

@@ -7,7 +7,11 @@ from flowermd.internal.uff_gmso import assign_uff_parameters
 
 
 class UFFProvider:
-    """Assign all supported UFF terms, including native inversions.
+    """Assign UFF bonds, harmonic angle surrogates and proper torsions.
+
+    Inversions are intentionally omitted because this workflow has no
+    maintained UFF out-of-plane bending backend. The report records the exact
+    inferred candidate groups removed, not a count of assigned Wilson terms.
 
     The existing UFF adapter also extracts its nonbonded parameters when
     assign_nonbonded is False. Unweighted DPD does not consume them.
@@ -17,9 +21,35 @@ class UFFProvider:
         """Return native UFF parameters without execution or bonded scaling."""
         if not isinstance(assign_nonbonded, bool):
             raise ValueError("assign_nonbonded must be a bool")
-        return assign_uff_parameters(
-            topology, molecule, atom_map=atom_map, include_impropers=True
+        typed, report = assign_uff_parameters(
+            topology, molecule, atom_map=atom_map, include_impropers=False
         )
+        indices = {site: i for i, site in enumerate(typed.sites)}
+        omitted = []
+        for connection in tuple(typed.impropers):
+            if connection.improper_type is not None:
+                raise ValueError(
+                    "UFF omission requires untyped inferred impropers"
+                )
+            if getattr(connection, "restraint", None):
+                raise ValueError(
+                    "cannot omit a restrained UFF improper candidate"
+                )
+            omitted.append(
+                tuple(indices[site] for site in connection.connection_members)
+            )
+            typed.remove_connection(connection)
+        typed.update_topology()
+        report["retained_untyped_impropers"] = 0
+        report["improper_force_backend"] = "unsupported"
+        report["improper_omission"] = {
+            "policy": "omit inferred improper candidates",
+            "reason": "UFF inversions intentionally omitted: no maintained Wilson out-of-plane bending backend",
+            "inferred_candidate_groups": tuple(omitted),
+            "inferred_candidate_count": len(omitted),
+        }
+        report["removed_unassigned_groups"]["impropers"] = tuple(omitted)
+        return typed, report
 
 
 class OpenFFProvider:

@@ -17,8 +17,9 @@ class BondedParameterProvider(Protocol):
 
     Every assigned atom type requires a positive physical mass. True
     assign_nonbonded also requires native epsilon quantities. False imposes no
-    epsilon or sigma requirement. Assign all known bonded terms regardless of
-    the execution ablations. Assignment must not scale stiffnesses or place
+    epsilon or sigma requirement. Assign all terms in the provider's documented
+    method regardless of the execution ablations. Report intentional omissions.
+    Assignment must not scale stiffnesses or place
     coordinates. The caller owns fresh input copies and copies returned data.
     Validation checks structural identity in the supplied site order. It cannot
     distinguish a permutation of coincident, chemically identical sites whose

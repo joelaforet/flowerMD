@@ -12,7 +12,6 @@ from gmso.lib.potential_templates import PotentialTemplateLibrary
 from flowermd.base.forcefield import BaseHOOMDForcefield
 from flowermd.internal.aa_dpd import _finite_coefficient, dpd_pair_parameters
 from flowermd.internal.aa_snapshot import route_all_atom_connections
-from flowermd.internal.uff_inversion import UFFInversionForce, is_uff_inversion
 
 
 class AllAtomDPD(BaseHOOMDForcefield):
@@ -23,8 +22,7 @@ class AllAtomDPD(BaseHOOMDForcefield):
     topology : gmso.Topology
         Assigned atom and bonded potentials with explicit units. Supported
         bonded forms are harmonic bonds and angles, scalar HOOMD periodic
-        proper torsions, native periodic proper and improper Fourier arrays,
-        and native UFF out-of-plane bending using the Wilson coordinate.
+        proper torsions and native periodic proper and improper Fourier arrays.
         The class identifies forms by their expressions and variables.
         It preserves coordinates, topology, potentials and units.
     repulsion, gamma : float
@@ -46,9 +44,9 @@ class AllAtomDPD(BaseHOOMDForcefield):
         coupling for that type. All-zero epsilons require an explicit reference.
     include_bonds, include_angles, include_torsions, include_impropers : bool
         Defaults are True. The class validates recognized potentials even when
-        disabled. UFF inversions execute on a single CPU rank with a 3D
-        orthorhombic box. Set include_impropers=False to retain untyped
-        impropers without constructing their forces.
+        disabled. UFF out-of-plane bending has no supported force backend.
+        Set include_impropers=False to retain imported UFF or untyped improper
+        groups without constructing their forces.
 
     Notes
     -----
@@ -72,6 +70,8 @@ class AllAtomDPD(BaseHOOMDForcefield):
     coefficients for the other category. Improper groups retain their exact
     center-first order through :func:`create_all_atom_frame`.
     ``disabled_term_counts`` and ``untyped_improper_count`` report omissions.
+    ``execution_summary`` records assigned and executed semantic group counts
+    and force-object counts separately for each bonded category.
     Frame construction must use these same maps, ordered GMSO connections and
     site indices as particle tags. Rebuild frames and forces after assignments
     change. This class does not construct a frame.
@@ -137,7 +137,7 @@ class AllAtomDPD(BaseHOOMDForcefield):
             epsilon_reference=epsilon_reference,
         )
         templates = PotentialTemplateLibrary()
-        inversion_parameters = {}
+        assigned_group_counts = {}
         converted_categories = {}
         force_classes = {}
         site_indices = {
@@ -176,6 +176,10 @@ class AllAtomDPD(BaseHOOMDForcefield):
             self.type_labels[category] = labels
             if not enabled:
                 self.disabled_term_counts[category] = len(connections)
+            assigned_group_counts[category] = sum(
+                connection.connection_type is not None
+                for connection in connections
+            )
             representatives = {}
             for connection in connections:
                 representatives.setdefault(
@@ -192,29 +196,6 @@ class AllAtomDPD(BaseHOOMDForcefield):
                     if not enabled and category == "impropers":
                         continue
                     raise ValueError(f"{location} require assigned potentials")
-                if category == "impropers" and is_uff_inversion(potential):
-                    try:
-                        k = _quantity(potential, "k", "kcal/mol")
-                        scaled = k * scale
-                        if (
-                            k < 0
-                            or not math.isfinite(scaled)
-                            or (k != 0 and scaled == 0)
-                        ):
-                            raise ValueError(
-                                "UFF inversion stiffness must be nonnegative and fit float range after scaling"
-                            )
-                        values = (
-                            scaled,
-                            *(
-                                _quantity(potential, name, "dimensionless")
-                                for name in ("c0", "c1", "c2")
-                            ),
-                        )
-                        inversion_parameters[potential] = values
-                    except ValueError as error:
-                        raise ValueError(f"{location}: {error}") from error
-                    continue
                 candidates = [template_name]
                 if category == "dihedrals":
                     candidates.append("PeriodicTorsionPotential")
@@ -235,7 +216,10 @@ class AllAtomDPD(BaseHOOMDForcefield):
                     if enabled:
                         if category == "impropers":
                             raise NotImplementedError(
-                                f"{location}: no improper force backend is implemented for this assigned form"
+                                f"{location}: no improper force backend is implemented for this assigned form. "
+                                "Only periodic dihedral impropers are supported; UFF out-of-plane "
+                                "bending has no supported backend. Set include_impropers=False "
+                                "to retain these groups without executing them."
                             )
                         raise ValueError(
                             f"unsupported {location} expression or independent variables for {potential.name}"
@@ -258,28 +242,8 @@ class AllAtomDPD(BaseHOOMDForcefield):
         physical_labels, _ = route_all_atom_connections(
             topology, type_labels=self.type_labels
         )
-        inversion_groups, inversion_values = [], []
-        edges = {
-            frozenset(site_indices[s] for s in bond.connection_members)
-            for bond in topology.bonds
-        }
-        for connection in topology.impropers:
-            if connection.improper_type not in inversion_parameters:
-                continue
-            group = tuple(
-                site_indices[s] for s in connection.connection_members
-            )
-            if any(
-                frozenset((group[0], outer)) not in edges for outer in group[1:]
-            ):
-                raise ValueError(
-                    f"UFF inversion at sites {group} requires a center-first star bond graph"
-                )
-            inversion_groups.append(group)
-            inversion_values.append(
-                inversion_parameters[connection.improper_type]
-            )
         self.forces_by_category = {}
+        self.execution_summary = {}
         for category, converted in converted_categories.items():
             category_forces = []
             if converted:
@@ -301,17 +265,14 @@ class AllAtomDPD(BaseHOOMDForcefield):
                             else {"k": 0.0, "n": 1, "d": 1, "phi0": 0.0}
                         )
                     category_forces.append(force)
-            if (
-                category == "impropers"
-                and include_impropers
-                and inversion_groups
-            ):
-                category_forces.append(
-                    UFFInversionForce(
-                        inversion_groups, inversion_values, topology.n_sites
-                    )
-                )
             self.forces_by_category[category] = tuple(category_forces)
+            self.execution_summary[category] = {
+                "assigned_groups": assigned_group_counts[category],
+                "executed_groups": 0
+                if category in self.disabled_term_counts
+                else assigned_group_counts[category],
+                "force_objects": len(category_forces),
+            }
         neighbor_list = hoomd.md.nlist.Cell(
             buffer=0.4, exclusions=("bond", "angle", "dihedral")
         )

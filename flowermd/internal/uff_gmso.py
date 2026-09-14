@@ -65,8 +65,11 @@ def assign_uff_parameters(
     order center, plane atom, plane atom, out atom. The three ordered terms
     keep the getter's force constant, which already includes the division by
     three. Generic improper sorting or a harmonic-dihedral substitution
-    changes this model. A compatible force backend is still required.
-    This function does not construct forces.
+    changes this model. These native terms are inspection and validation data;
+    this workflow has no supported Wilson execution backend. False
+    include_impropers retains inferred untyped groups. Neither option constructs
+    forces or implies that UFF inversions can execute. The supported UFFProvider
+    omits those groups and reports its policy.
     """
     if not isinstance(include_impropers, bool):
         raise ValueError("include_impropers must be a bool")

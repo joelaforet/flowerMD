@@ -157,9 +157,13 @@ class AllAtomSystem(mbuildSystem):
         configures string inputs. OpenFF defaults to openff-2.3.0.offxml;
         sage fixes that resource. OpenFF vdW assignment follows
         epsilon_weighting. UFF also extracts nonbonded parameters when
-        unweighted, but DPD does not consume them. All known bonded terms are
-        assigned independently of the four execution ablations. UFF inversion
-        execution supports one CPU rank with a 3D orthorhombic box.
+        unweighted, but DPD does not consume them. Providers assign the terms
+        in their documented method independently of the four ablations. UFFProvider
+        omits inversions because no maintained execution backend is supported.
+        include_impropers=True executes supported assigned groups; it does not
+        require a provider to assign omitted forms. OpenFF periodic impropers
+        remain supported. The report distinguishes requested flags, assigned
+        and executed groups, and backend force-object counts.
 
         Coefficients, units, strict boolean ablations and weighting follow
         AllAtomDPD. Disabled terms preserve groups and pair exclusions.
@@ -223,6 +227,7 @@ class AllAtomSystem(mbuildSystem):
             else f"{type(provider).__module__}.{type(provider).__qualname__}",
             "assignment": assignment,
             "dpd": deepcopy(options),
+            "execution": deepcopy(bundle.execution_summary),
             "epsilon_source": assignment["source"]
             if epsilon_weighting
             else None,

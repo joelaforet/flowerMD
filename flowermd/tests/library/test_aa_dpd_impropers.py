@@ -384,7 +384,8 @@ def test_invalid_improper_arrays_even_when_disabled(
 def test_uff_unknown_and_untyped_storage():
     raw, molecule, mapping = inputs("CC(=O)NC")
     top, _ = assign_uff_parameters(raw, molecule, atom_map=mapping)
-    assert bundle(top).forces_by_category["impropers"]
+    with pytest.raises(NotImplementedError, match="UFF out-of-plane"):
+        bundle(top)
     top.impropers[0].improper_type = None
     top.impropers[1].improper_type = gmso.ImproperType(
         expression="k*phi**4",
