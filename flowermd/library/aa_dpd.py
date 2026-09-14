@@ -4,6 +4,7 @@ import math
 
 import gmso
 import hoomd
+import numpy as np
 import sympy
 import unyt as u
 from gmso.lib.potential_templates import PotentialTemplateLibrary
@@ -19,9 +20,10 @@ class AllAtomDPD(BaseHOOMDForcefield):
     ----------
     topology : gmso.Topology
         Assigned atom and bonded potentials with explicit units. Supported
-        bonded forms are harmonic bonds and angles, and scalar HOOMD periodic
-        proper torsions. The class identifies forms by their expressions and
-        variables. It preserves coordinates, topology, potentials and units.
+        bonded forms are harmonic bonds and angles, scalar HOOMD periodic
+        proper torsions, and native periodic proper Fourier arrays. The class
+        identifies forms by their expressions and variables. It preserves
+        coordinates, topology, potentials and units.
     repulsion, gamma : float
         Nonnegative nominal DPD coefficients under fixed references. Repulsion
         has units of energy divided by length. Gamma has units of mass divided
@@ -51,7 +53,12 @@ class AllAtomDPD(BaseHOOMDForcefield):
     buffer is 0.4 angstrom. Bond, angle and dihedral exclusions remain when
     their forces are disabled. The class does not add Lennard-Jones or Coulomb
     forces, or substitute a different improper form.
-    Scalar periodic coefficients may be signed, as fitted force fields require.
+    Periodic coefficients may be signed, as fitted force fields require.
+    Native periodic torsions accept scalars or aligned nonempty one-dimensional
+    arrays of k, n and phi_eq. Each component uses a separate HOOMD Periodic
+    force with the same connection labels and groups. Missing components use
+    zero stiffness. Native k converts to HOOMD k with a factor of two; existing
+    HOOMD-form scalar potentials keep their original prefactor.
 
     ``type_labels`` maps actual potential objects to backend labels separately
     for sites, bonds, angles, dihedrals and impropers, in first-occurrence order.
@@ -180,31 +187,48 @@ class AllAtomDPD(BaseHOOMDForcefield):
                             f"{location}: no improper force backend is implemented for this assigned form"
                         )
                     continue
-                template = templates[template_name]
-                if (
-                    potential.independent_variables
-                    != template.independent_variables
-                    or sympy.simplify(
-                        potential.expression - template.expression
-                    )
-                    != 0
-                ):
+                candidates = [template_name]
+                if category == "dihedrals":
+                    candidates.append("PeriodicTorsionPotential")
+                matched = next(
+                    (
+                        name
+                        for name in candidates
+                        if potential.independent_variables
+                        == templates[name].independent_variables
+                        and sympy.simplify(
+                            potential.expression - templates[name].expression
+                        )
+                        == 0
+                    ),
+                    None,
+                )
+                if matched is None:
                     if enabled:
                         raise ValueError(
                             f"unsupported {location} expression or independent variables for {potential.name}"
                         )
                     continue
                 try:
-                    converted[label] = _bonded_parameters(
-                        potential, category, scale
+                    converted[label] = (
+                        _periodic_parameters(potential, scale)
+                        if matched == "PeriodicTorsionPotential"
+                        else [_bonded_parameters(potential, category, scale)]
                     )
                 except ValueError as error:
                     raise ValueError(f"{location}: {error}") from error
             if enabled and converted:
-                force = force_class()
-                for label, values in converted.items():
-                    force.params[label] = values
-                forces.append(force)
+                for component in range(
+                    max(len(values) for values in converted.values())
+                ):
+                    force = force_class()
+                    for label, values in converted.items():
+                        force.params[label] = (
+                            values[component]
+                            if component < len(values)
+                            else {"k": 0.0, "n": 1, "d": 1, "phi0": 0.0}
+                        )
+                    forces.append(force)
         neighbor_list = hoomd.md.nlist.Cell(
             buffer=0.4, exclusions=("bond", "angle", "dihedral")
         )
@@ -286,3 +310,69 @@ def _bonded_parameters(potential, category, scale):
         "d": int(d),
         "phi0": _quantity(potential, "phi0", "rad"),
     }
+
+
+def _periodic_parameters(potential, scale):
+    values = {}
+    shapes = set()
+    for name, unit in (
+        ("k", "kcal/mol"),
+        ("n", "dimensionless"),
+        ("phi_eq", "rad"),
+    ):
+        value = potential.parameters.get(name)
+        if (
+            not isinstance(value, u.unyt_array)
+            or value.ndim > 1
+            or value.size == 0
+        ):
+            raise ValueError(
+                f"{potential.name} {name} must be a scalar or nonempty one-dimensional quantity"
+            )
+        shapes.add(value.shape)
+        try:
+            numeric = np.atleast_1d(value.to_value(unit))
+        except (ValueError, u.exceptions.UnitConversionError) as error:
+            raise ValueError(
+                f"{potential.name} {name} has incompatible units; expected {unit}"
+            ) from error
+        if not np.all(np.isfinite(numeric)):
+            raise ValueError(f"{potential.name} {name} must be finite")
+        values[name] = numeric
+    if len(shapes) != 1:
+        raise ValueError(
+            "periodic parameters must have aligned scalar or array shapes"
+        )
+    ns = values["n"]
+    if (
+        np.any(ns <= 0)
+        or np.any(ns != np.floor(ns))
+        or np.any(ns > np.iinfo(np.int32).max)
+    ):
+        raise ValueError(
+            "periodic n must be a positive integer within the HOOMD int32 range"
+        )
+    ks = values["k"]
+    # Combine exponents before rounding the final coefficient. This avoids
+    # overflow or underflow in an intermediate product when 2*k*scale fits.
+    scale_mantissa, scale_exponent = math.frexp(scale)
+    scaled = []
+    for k in ks:
+        mantissa, exponent = math.frexp(float(k))
+        try:
+            value = math.ldexp(
+                mantissa * scale_mantissa, exponent + scale_exponent + 1
+            )
+        except OverflowError as error:
+            raise ValueError(
+                f"scaled stiffness for {potential.name} is outside float range"
+            ) from error
+        if not math.isfinite(value) or (k != 0 and value == 0):
+            raise ValueError(
+                f"scaled stiffness for {potential.name} is outside float range"
+            )
+        scaled.append(value)
+    return [
+        {"k": float(k), "n": int(n), "d": 1, "phi0": float(phase)}
+        for k, n, phase in zip(scaled, ns, values["phi_eq"])
+    ]
