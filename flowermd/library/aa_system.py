@@ -16,7 +16,7 @@ from flowermd.library.systems import mbuildSystem
 
 
 class AllAtomSystem(mbuildSystem):
-    """Prepare one supplied connected explicit-H structure without moving it.
+    """Prepare a supplied explicit-H structure without moving its components.
 
     ``compound`` supplies mBuild particle order, origin-based nm coordinates
     and an orthorhombic box. ``molecule`` is the authoritative RDKit graph;
@@ -44,9 +44,12 @@ class AllAtomSystem(mbuildSystem):
             raise ValueError("molecule must be a nonempty RDKit molecule")
         graph = Chem.Mol(molecule)
         Chem.SanitizeMol(graph)
-        if len(Chem.GetMolFrags(graph)) != 1:
+        component_atoms = Chem.GetMolFrags(graph)
+        if sorted(i for group in component_atoms for i in group) != list(
+            range(graph.GetNumAtoms())
+        ):
             raise ValueError(
-                "AllAtomSystem currently requires a connected graph"
+                "chemical components must partition the atom indices"
             )
         if any(
             a.GetNumImplicitHs() or a.GetNumExplicitHs()
@@ -120,6 +123,14 @@ class AllAtomSystem(mbuildSystem):
             for b in graph.GetBonds()
         }
         _validate_graph(self.gmso_system, graph, mapping, graph_edges)
+        self._construction_components = tuple(
+            {
+                "index": index,
+                "original_atom_indices": tuple(atoms),
+                "site_indices": tuple(mapping[i] for i in atoms),
+            }
+            for index, atoms in enumerate(component_atoms)
+        )
         self._construction_topology = deepcopy(self.gmso_system)
         self._construction_positions = positions
         self._construction_box = lengths
@@ -226,6 +237,10 @@ class AllAtomSystem(mbuildSystem):
             if isinstance(bonded, str)
             else f"{type(provider).__module__}.{type(provider).__qualname__}",
             "assignment": assignment,
+            "construction": {
+                "component_count": len(self._construction_components),
+                "components": self.components,
+            },
             "dpd": deepcopy(options),
             "execution": deepcopy(bundle.execution_summary),
             "epsilon_source": assignment["source"]
@@ -248,6 +263,16 @@ class AllAtomSystem(mbuildSystem):
         self._snap_refs = snapshot_references
         self._ff_refs = force_references
         self._assignment_report = report
+
+    @property
+    def components(self):
+        """Return copied chemical component records in RDKit atom order.
+
+        Each record contains its index, original atom indices and mapped site
+        indices. Components follow graph bonds, independently of hierarchy or
+        repeated names, and remain available before force-field preparation.
+        """
+        return deepcopy(self._construction_components)
 
     def _require_prepared(self):
         if self._dpd_forcefield is None:
