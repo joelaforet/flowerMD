@@ -996,6 +996,211 @@ class Simulation(hoomd.simulation.Simulation):
         self.run(steps=n_steps, write_at_start=write_at_start)
         self.operations.updaters.remove(std_out_logger_printer)
 
+    def run_FIRE(
+        self,
+        n_steps,
+        dt,
+        force_tol=1e-1,
+        angmom_tol=1000.0,
+        energy_tol=1e-1,
+        finc_dt=1.1,
+        fdec_dt=0.5,
+        alpha_start=0.1,
+        fdec_alpha=0.99,
+        min_steps_adapt=5,
+        min_steps_conv=10,
+        write_at_start=False,
+        until_converged=False,
+        max_steps=None,
+    ):
+        """Minimize the potential energy with the FIRE algorithm.
+
+        The current forces are handed to a `hoomd.md.minimize.FIRE`
+        integrator with a `ConstantVolume` method for the duration of the
+        run. The previous integrator (if any) is restored afterwards, so
+        `run_NVT`, `run_NVE`, etc. can follow a minimization. FIRE zeroes
+        particle velocities when it starts.
+
+        The signature extends the `run_FIRE` proposed in
+        cmelab/flowerMD#264 (same first six arguments); reconcile the two
+        when that PR merges.
+
+        Parameters
+        ----------
+        n_steps : int, required
+            Number of minimization steps to run per call (or per chunk when
+            `until_converged` is True).
+        dt : float, required
+            Maximum FIRE time step.
+        force_tol : float, default 1e-1
+            Force convergence tolerance (per particle).
+        angmom_tol : float, default 1000.0
+            Angular momentum convergence tolerance (per particle).
+        energy_tol : float, default 1e-1
+            Energy convergence tolerance.
+        finc_dt : float, default 1.1
+            Factor to increase dt by when the power is positive.
+        fdec_dt : float, default 0.5
+            Factor to decrease dt by when the power is negative.
+        alpha_start : float, default 0.1
+            Initial velocity mixing parameter.
+        fdec_alpha : float, default 0.99
+            Factor to decrease alpha by.
+        min_steps_adapt : int, default 5
+            Steps of positive power before dt and alpha adapt.
+        min_steps_conv : int, default 10
+            Steps of positive power before convergence is declared.
+        write_at_start : bool, default False
+            When True, triggers writers that evaluate to True for the
+            initial step before the first minimization step.
+        until_converged : bool, default False
+            When True, keep running chunks of `n_steps` until
+            `FIRE.converged` is True or `max_steps` is reached.
+        max_steps : int, optional
+            Upper bound on the total number of steps when
+            `until_converged` is True. Required in that case.
+
+        Returns
+        -------
+        dict
+            ``{"steps": int, "converged": bool}``; `steps` counts the FIRE
+            steps run by this call.
+
+        """
+        if until_converged and max_steps is None:
+            raise ValueError("max_steps is required when until_converged.")
+        if until_converged and max_steps < n_steps:
+            raise ValueError("max_steps must be at least n_steps.")
+        previous_integrator = self.integrator
+        fire = hoomd.md.minimize.FIRE(
+            dt=dt,
+            force_tol=force_tol,
+            angmom_tol=angmom_tol,
+            energy_tol=energy_tol,
+            finc_dt=finc_dt,
+            fdec_dt=fdec_dt,
+            alpha_start=alpha_start,
+            fdec_alpha=fdec_alpha,
+            min_steps_adapt=min_steps_adapt,
+            min_steps_conv=min_steps_conv,
+            integrate_rotational_dof=(True if self.constraint else False),
+        )
+        if self._rigid_constraint:
+            fire.rigid = self._rigid_constraint
+        if self._distance_constraint:
+            fire.constraints.append(self._distance_constraint)
+        fire.methods.append(
+            hoomd.md.methods.ConstantVolume(filter=self.integrate_group)
+        )
+        # Detach the forces from the MD integrator before FIRE takes them.
+        self.operations.integrator = None
+        fire.forces.extend(self._forcefield)
+        self.operations.integrator = fire
+        self.integrator = fire
+        steps_run = 0
+        try:
+            self.run(steps=n_steps, write_at_start=write_at_start)
+            steps_run += n_steps
+            while (
+                until_converged and not fire.converged and steps_run < max_steps
+            ):
+                chunk = min(n_steps, max_steps - steps_run)
+                self.run(steps=chunk, write_at_start=False)
+                steps_run += chunk
+            converged = bool(fire.converged)
+        finally:
+            # Hand the forces back to the previous MD integrator, if any.
+            self.operations.integrator = None
+            fire.forces.clear()
+            if previous_integrator is not None:
+                previous_integrator.forces = self._forcefield
+                self.operations.integrator = previous_integrator
+            self.integrator = previous_integrator
+        return {"steps": steps_run, "converged": converged}
+
+    def run_DPD(
+        self,
+        n_steps,
+        stop=None,
+        chunk=500,
+        min_steps=0,
+        write_at_start=True,
+    ):
+        """Run NVE dynamics in chunks, optionally until a criterion says stop.
+
+        Dissipative particle dynamics uses the NVE integrator; the DPD pair
+        force provides the thermostat. This method runs `min_steps` first,
+        then repeatedly runs `chunk` steps and calls ``stop(self)`` after
+        each chunk, returning as soon as it evaluates to True or when
+        `n_steps` total steps have been run. With ``stop=None`` it runs
+        exactly `n_steps`, like `run_NVE`.
+
+        Parameters
+        ----------
+        n_steps : int, required
+            Maximum total number of steps for this call.
+        stop : callable, optional
+            ``stop(sim) -> bool``, evaluated after each chunk once at least
+            `min_steps` have been run. See
+            `flowermd.utils.EnergyStationarity` for the energy-based rule
+            used by the all-atom PhantomWalk initializer.
+        chunk : int, default 500
+            Number of steps between evaluations of `stop`.
+        min_steps : int, default 0
+            Steps to run before the first evaluation of `stop`.
+        write_at_start : bool, default True
+            When True, triggers writers that evaluate to True for the
+            initial step before the first simulation step.
+
+        Returns
+        -------
+        dict
+            ``{"steps": int, "stopped_by_criterion": bool}``.
+
+        """
+        if chunk < 1:
+            raise ValueError("chunk must be at least 1.")
+        if min_steps > n_steps:
+            raise ValueError("min_steps cannot exceed n_steps.")
+        dpd_types = (hoomd.md.pair.DPD, hoomd.md.pair.DPDLJ)
+        if not any(isinstance(f, dpd_types) for f in self._forcefield):
+            warnings.warn(
+                "run_DPD: no hoomd.md.pair.DPD or DPDLJ force found; the "
+                "NVE run will not be thermostatted."
+            )
+        self.set_integrator_method(
+            integrator_method=hoomd.md.methods.ConstantVolume,
+            method_kwargs={"filter": self.integrate_group},
+        )
+        std_out_logger = StdOutLogger(n_steps=n_steps, sim=self)
+        std_out_logger_printer = hoomd.update.CustomUpdater(
+            trigger=hoomd.trigger.Periodic(self._std_out_freq),
+            action=std_out_logger,
+        )
+        self.operations.updaters.append(std_out_logger_printer)
+        steps_run = 0
+        stopped = False
+        try:
+            if stop is None:
+                self.run(steps=n_steps, write_at_start=write_at_start)
+                steps_run = n_steps
+            else:
+                if min_steps > 0:
+                    self.run(steps=min_steps, write_at_start=write_at_start)
+                    steps_run = min_steps
+                    write_at_start = False
+                while steps_run < n_steps:
+                    this_chunk = min(chunk, n_steps - steps_run)
+                    self.run(steps=this_chunk, write_at_start=write_at_start)
+                    write_at_start = False
+                    steps_run += this_chunk
+                    if stop(self):
+                        stopped = True
+                        break
+        finally:
+            self.operations.updaters.remove(std_out_logger_printer)
+        return {"steps": steps_run, "stopped_by_criterion": stopped}
+
     def run_displacement_cap(
         self,
         n_steps,
