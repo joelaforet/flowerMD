@@ -16,3 +16,10 @@ Base Types
 
 .. automodule:: flowermd.utils.base_types
    :members:
+
+
+Stopping Criteria
+-----------------
+
+.. automodule:: flowermd.utils.stopping
+   :members:
