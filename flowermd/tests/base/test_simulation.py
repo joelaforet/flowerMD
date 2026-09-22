@@ -27,6 +27,7 @@ from flowermd.library.polymers import (
 from flowermd.library.systems import mbuildSystem
 from flowermd.tests import BaseTest
 from flowermd.utils import (
+    EnergyStationarity,
     create_rigid_ellipsoid_chain,
     get_target_box_mass_density,
     set_bond_constraints,
@@ -238,6 +239,101 @@ class TestSimulate(BaseTest):
         sim = Simulation.from_system(benzene_system)
         sim.run_NVE(n_steps=500)
         assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
+
+    def test_run_FIRE_lowers_energy_and_restores_integrator(
+        self, benzene_system
+    ):
+        sim = Simulation.from_system(benzene_system)
+        sim.run_NVE(n_steps=10)
+        energy_before = sum(f.energy for f in sim.forces)
+        result = sim.run_FIRE(n_steps=200, dt=1e-4, force_tol=1e-6)
+        assert result["steps"] == 200
+        assert isinstance(result["converged"], bool)
+        assert isinstance(sim.integrator, hoomd.md.Integrator)
+        assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
+        energy_after = sum(f.energy for f in sim.forces)
+        assert energy_after <= energy_before
+        # MD still works after the minimizer handed the forces back
+        sim.run_NVT(n_steps=10, kT=1.0, tau_kt=sim.dt * 100)
+        assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
+        assert sim.method.thermostat is not None
+
+    def test_run_FIRE_first_call_and_until_converged(self, benzene_system):
+        sim = Simulation.from_system(benzene_system)
+        result = sim.run_FIRE(
+            n_steps=50,
+            dt=1e-4,
+            force_tol=1e3,
+            energy_tol=1e3,
+            until_converged=True,
+            max_steps=500,
+        )
+        assert result["converged"] is True
+        assert 50 <= result["steps"] <= 500
+        assert sim.integrator is None
+        sim.run_NVE(n_steps=10)
+        assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
+
+    def test_run_FIRE_until_converged_requires_max_steps(self, benzene_system):
+        sim = Simulation.from_system(benzene_system)
+        with pytest.raises(ValueError):
+            sim.run_FIRE(n_steps=10, dt=1e-4, until_converged=True)
+
+    def _dpd_simulation(self, benzene_cg_system):
+        snapshot = benzene_cg_system.hoomd_snapshot
+        dpd = hoomd.md.pair.DPD(
+            nlist=hoomd.md.nlist.Cell(buffer=0.4), kT=1.0, default_r_cut=1.0
+        )
+        for i, type_i in enumerate(snapshot.particles.types):
+            for type_j in snapshot.particles.types[i:]:
+                dpd.params[(type_i, type_j)] = dict(A=25.0, gamma=4.5)
+        return Simulation(initial_state=snapshot, forcefield=[dpd], dt=0.01)
+
+    def test_run_DPD_fixed_steps(self, benzene_cg_system):
+        sim = self._dpd_simulation(benzene_cg_system)
+        result = sim.run_DPD(n_steps=300)
+        assert result == {"steps": 300, "stopped_by_criterion": False}
+        assert sim.timestep == 300
+        assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
+
+    def test_run_DPD_stop_callable(self, benzene_cg_system):
+        sim = self._dpd_simulation(benzene_cg_system)
+        calls = []
+
+        def stop_after_two(s):
+            calls.append(s.timestep)
+            return len(calls) == 2
+
+        result = sim.run_DPD(
+            n_steps=5000, stop=stop_after_two, chunk=100, min_steps=50
+        )
+        assert result == {"steps": 250, "stopped_by_criterion": True}
+        assert calls == [150, 250]
+
+    def test_run_DPD_reaches_n_steps_without_stopping(self, benzene_cg_system):
+        sim = self._dpd_simulation(benzene_cg_system)
+        result = sim.run_DPD(n_steps=250, stop=lambda s: False, chunk=100)
+        assert result == {"steps": 250, "stopped_by_criterion": False}
+
+    def test_run_DPD_energy_stationarity(self, benzene_cg_system):
+        sim = self._dpd_simulation(benzene_cg_system)
+        criterion = EnergyStationarity(tol=1.0, consecutive=2)
+        result = sim.run_DPD(n_steps=2000, stop=criterion, chunk=100)
+        # tol=1.0 passes any finite change, so it stops after 3 chunks
+        assert result == {"steps": 300, "stopped_by_criterion": True}
+        assert len(criterion.history) == 3
+
+    def test_run_DPD_warns_without_dpd_force(self, benzene_system):
+        sim = Simulation.from_system(benzene_system)
+        with pytest.warns(UserWarning, match="run_DPD"):
+            sim.run_DPD(n_steps=10)
+
+    def test_run_DPD_bad_arguments(self, benzene_cg_system):
+        sim = self._dpd_simulation(benzene_cg_system)
+        with pytest.raises(ValueError):
+            sim.run_DPD(n_steps=10, chunk=0)
+        with pytest.raises(ValueError):
+            sim.run_DPD(n_steps=10, min_steps=20)
 
     def test_displacement_cap(self, benzene_system):
         sim = Simulation.from_system(benzene_system)
