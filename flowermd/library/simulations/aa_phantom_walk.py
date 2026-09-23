@@ -154,11 +154,12 @@ class AllAtomPhantomWalk(Simulation):
 
     def run_initialization(
         self,
-        dpd_min_steps=4000,
+        dpd_min_steps=3500,
         dpd_chunk=500,
         dpd_max_steps=40000,
         energy_tol=0.02,
         consecutive=2,
+        dpd_samples_per_chunk=5,
         stop=None,
         fire_steps=100,
         fire_dt=0.001,
@@ -171,8 +172,10 @@ class AllAtomPhantomWalk(Simulation):
 
         Parameters
         ----------
-        dpd_min_steps : int, default 4000
-            DPD steps before the stopping criterion is first evaluated.
+        dpd_min_steps : int, default 3500
+            Unmonitored DPD steps before the first monitored chunk, so the
+            first window ends at 4,000 steps and the earliest return is at
+            5,000, as in the PhantomWalk protocol.
         dpd_chunk : int, default 500
             Steps between evaluations.
         dpd_max_steps : int, default 40000
@@ -181,6 +184,9 @@ class AllAtomPhantomWalk(Simulation):
             Relative energy change per force allowed between chunks.
         consecutive : int, default 2
             Consecutive stationary comparisons required.
+        dpd_samples_per_chunk : int, default 5
+            Energy samples averaged within each chunk before comparing
+            (the protocol averages five samples per 500-step window).
         stop : callable, optional
             ``stop(sim) -> bool`` replacing the energy-stationarity rule.
         fire_steps : int, default 100
@@ -221,6 +227,7 @@ class AllAtomPhantomWalk(Simulation):
                 "dpd_max_steps": dpd_max_steps,
                 "energy_tol": energy_tol,
                 "consecutive": consecutive,
+                "dpd_samples_per_chunk": dpd_samples_per_chunk,
                 "custom_stop": stop is not None,
                 "fire_steps": fire_steps,
                 "fire_dt": fire_dt,
@@ -270,6 +277,7 @@ class AllAtomPhantomWalk(Simulation):
             stop=criterion,
             chunk=dpd_chunk,
             min_steps=dpd_min_steps,
+            samples_per_chunk=dpd_samples_per_chunk,
             write_at_start=write_at_start,
         )
         record["timings_s"]["dpd"] = time.perf_counter() - started

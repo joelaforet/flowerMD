@@ -323,6 +323,22 @@ class TestSimulate(BaseTest):
         assert result == {"steps": 300, "stopped_by_criterion": True}
         assert len(criterion.history) == 3
 
+    def test_run_DPD_samples_within_chunk(self, benzene_cg_system):
+        sim = self._dpd_simulation(benzene_cg_system)
+        criterion = EnergyStationarity(tol=10.0, consecutive=1)
+        calls = []
+        original = criterion.sample
+        criterion.sample = lambda s: (calls.append(s.timestep), original(s))
+        result = sim.run_DPD(
+            n_steps=1000, stop=criterion, chunk=100, samples_per_chunk=5
+        )
+        assert result == {"steps": 200, "stopped_by_criterion": True}
+        assert calls == [20, 40, 60, 80, 120, 140, 160, 180]
+        with pytest.raises(ValueError):
+            sim.run_DPD(
+                n_steps=100, stop=criterion, chunk=100, samples_per_chunk=3
+            )
+
     def test_run_DPD_warns_without_dpd_force(self, benzene_system):
         sim = Simulation.from_system(benzene_system)
         with pytest.warns(UserWarning, match="run_DPD"):

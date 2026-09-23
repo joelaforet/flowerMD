@@ -27,7 +27,8 @@ class EnergyStationarity:
     -----
     The criterion keeps its own state between calls. Call `reset()` before
     reusing one instance for a second run. `history` holds the per-particle
-    energies recorded at each call, in the order the forces were monitored.
+    energies recorded at each call (chunk averages when `sample` was used),
+    in the order the forces were monitored.
 
     """
 
@@ -42,10 +43,28 @@ class EnergyStationarity:
         self.reset()
 
     def reset(self):
-        """Forget previous energies and passing comparisons."""
+        """Forget previous energies, pending samples and passing comparisons."""
         self._previous = None
         self._passes = 0
+        self._pending = []
         self.history = []
+
+    def _energies(self, sim):
+        forces = self.forces if self.forces is not None else sim.forces
+        n_particles = sim.state.N_particles
+        return np.array(
+            [force.energy / n_particles for force in forces], dtype=float
+        )
+
+    def sample(self, sim):
+        """Record one energy sample inside the current chunk.
+
+        `Simulation.run_DPD` calls this between the sub-runs of a chunk when
+        ``samples_per_chunk > 1``; the next call to the criterion then
+        compares the chunk average instead of one instantaneous value, as
+        the PhantomWalk protocol does (five samples per 500-step window).
+        """
+        self._pending.append(self._energies(sim))
 
     def __call__(self, sim):
         """Return True when the monitored energies have become stationary.
@@ -57,11 +76,10 @@ class EnergyStationarity:
             the case whenever this is called from `Simulation.run_DPD`.
 
         """
-        forces = self.forces if self.forces is not None else sim.forces
-        n_particles = sim.state.N_particles
-        current = np.array(
-            [force.energy / n_particles for force in forces], dtype=float
-        )
+        current = self._energies(sim)
+        if self._pending:
+            current = np.mean(self._pending + [current], axis=0)
+            self._pending = []
         self.history.append(current)
         if self._previous is None or not np.all(np.isfinite(current)):
             self._passes = 0

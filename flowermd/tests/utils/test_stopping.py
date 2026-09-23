@@ -65,3 +65,23 @@ class TestEnergyStationarity:
             EnergyStationarity(tol=0.0)
         with pytest.raises(ValueError):
             EnergyStationarity(consecutive=0)
+
+
+class TestEnergyStationaritySampling:
+    def test_chunk_average_is_compared(self):
+        criterion = EnergyStationarity(tol=0.02, consecutive=1)
+        criterion.sample(_FakeSim(90.0))
+        criterion.sample(_FakeSim(110.0))
+        assert criterion(_FakeSim(100.0)) is False  # first chunk, mean 100
+        np.testing.assert_allclose(criterion.history[0], [10.0])
+        criterion.sample(_FakeSim(80.0))
+        criterion.sample(_FakeSim(120.0))
+        # instantaneous 101 alone would pass; the chunk mean 100.33 also passes
+        assert criterion(_FakeSim(101.0)) is True
+        assert criterion._pending == []
+
+    def test_reset_clears_pending(self):
+        criterion = EnergyStationarity()
+        criterion.sample(_FakeSim(1.0))
+        criterion.reset()
+        assert criterion._pending == [] and criterion.history == []

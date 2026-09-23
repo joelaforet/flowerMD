@@ -1124,6 +1124,7 @@ class Simulation(hoomd.simulation.Simulation):
         stop=None,
         chunk=500,
         min_steps=0,
+        samples_per_chunk=1,
         write_at_start=True,
     ):
         """Run NVE dynamics in chunks, optionally until a criterion says stop.
@@ -1148,6 +1149,12 @@ class Simulation(hoomd.simulation.Simulation):
             Number of steps between evaluations of `stop`.
         min_steps : int, default 0
             Steps to run before the first evaluation of `stop`.
+        samples_per_chunk : int, default 1
+            When greater than 1 and `stop` has a ``sample(sim)`` method,
+            each chunk is run in this many equal sub-runs and
+            ``stop.sample(sim)`` is called after each one before ``stop(sim)``
+            decides, so the criterion can average over the chunk. `chunk`
+            must be divisible by it.
         write_at_start : bool, default True
             When True, triggers writers that evaluate to True for the
             initial step before the first simulation step.
@@ -1162,6 +1169,16 @@ class Simulation(hoomd.simulation.Simulation):
             raise ValueError("chunk must be at least 1.")
         if min_steps > n_steps:
             raise ValueError("min_steps cannot exceed n_steps.")
+        if samples_per_chunk < 1 or chunk % samples_per_chunk:
+            raise ValueError("chunk must be a multiple of samples_per_chunk.")
+        sampler = (
+            getattr(stop, "sample", None) if samples_per_chunk > 1 else None
+        )
+        if samples_per_chunk > 1 and sampler is None:
+            warnings.warn(
+                "run_DPD: samples_per_chunk > 1 but stop has no sample() "
+                "method; evaluating once per chunk."
+            )
         dpd_types = (hoomd.md.pair.DPD, hoomd.md.pair.DPDLJ)
         if not any(isinstance(f, dpd_types) for f in self._forcefield):
             warnings.warn(
@@ -1191,7 +1208,17 @@ class Simulation(hoomd.simulation.Simulation):
                     write_at_start = False
                 while steps_run < n_steps:
                     this_chunk = min(chunk, n_steps - steps_run)
-                    self.run(steps=this_chunk, write_at_start=write_at_start)
+                    if sampler is not None and this_chunk == chunk:
+                        piece = chunk // samples_per_chunk
+                        for _ in range(samples_per_chunk - 1):
+                            self.run(steps=piece, write_at_start=write_at_start)
+                            write_at_start = False
+                            sampler(self)
+                        self.run(steps=piece, write_at_start=write_at_start)
+                    else:
+                        self.run(
+                            steps=this_chunk, write_at_start=write_at_start
+                        )
                     write_at_start = False
                     steps_run += this_chunk
                     if stop(self):
