@@ -7,6 +7,7 @@ from .forcefields import (
     OPLS_AA_BENZENE,
     OPLS_AA_DIMETHYLETHER,
     OPLS_AA_PPS,
+    AllAtomDPD,
     BaseHOOMDForcefield,
     BaseXMLForcefield,
     BeadSpring,
