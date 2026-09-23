@@ -1,6 +1,7 @@
 """Polymer and CoPolymer example classes."""
 
 import os
+import random
 
 import mbuild as mb
 import numpy as np
@@ -8,6 +9,7 @@ from mbuild.coordinate_transform import z_axis_transform
 
 from flowermd import CoPolymer, Polymer
 from flowermd.assets import MON_DIR
+from flowermd.internal.monomers import monomer_from_marked_smiles
 
 
 class PolyEthylene(Polymer):
@@ -523,3 +525,224 @@ class EllipsoidChainRand(Polymer):
                 if d[i] > pos_range[i]:
                     d[i] -= pos_range[i]
         return d
+
+
+class MarkedSmilesPolymer(Polymer):
+    """A polymer whose repeat unit is a SMILES with marked attachment points.
+
+    Subclasses set ``smiles`` (with ``[*:1]`` at the head and ``[*:2]`` at
+    the tail), ``bond_length`` (nm) and, for reference, ``reference_density``
+    in g/cm**3. The repeat unit is embedded with RDKit so chirality tags are
+    honoured, and the two attachment hydrogens become the bonding sites. See
+    `flowermd.internal.monomers.monomer_from_marked_smiles`.
+
+    Parameters
+    ----------
+    lengths : int or list, required
+        Repeat units per chain.
+    num_mols : int or list, required
+        Chains per length.
+    seed : int, default 0
+        RDKit embedding seed for the repeat unit.
+    name : str, optional
+        Compound name; defaults to the class attribute ``default_name``.
+
+    """
+
+    smiles = None
+    bond_length = 0.154
+    reference_density = None
+    default_name = "polymer"
+
+    def __init__(self, lengths, num_mols, seed=0, name=None, **kwargs):
+        if self.smiles is None:
+            raise NotImplementedError("Subclasses must define `smiles`.")
+        monomer, bond_indices = monomer_from_marked_smiles(
+            self.smiles, seed=seed, name=name or self.default_name
+        )
+        self.marked_smiles = self.smiles
+        super(MarkedSmilesPolymer, self).__init__(
+            lengths=lengths,
+            num_mols=num_mols,
+            compound=monomer,
+            bond_indices=bond_indices,
+            bond_length=self.bond_length,
+            bond_orientation=[None, None],
+            name=name or self.default_name,
+            **kwargs,
+        )
+
+
+class PET(MarkedSmilesPolymer):
+    """Poly(ethylene terephthalate). Amorphous density about 1.33 g/cm**3."""
+
+    smiles = "O=C(OCCO[*:2])c1ccc(C(=O)[*:1])cc1"
+    bond_length = 0.134
+    reference_density = 1.33
+    default_name = "pet"
+
+
+class Polycarbonate(MarkedSmilesPolymer):
+    """Bisphenol-A polycarbonate. Amorphous density about 1.20 g/cm**3."""
+
+    smiles = "CC(C)(c1ccc(OC(=O)O[*:2])cc1)c1ccc([*:1])cc1"
+    bond_length = 0.136
+    reference_density = 1.20
+    default_name = "pc"
+
+
+class PEI(MarkedSmilesPolymer):
+    """Polyetherimide (Ultem type). Amorphous density about 1.27 g/cm**3."""
+
+    smiles = (
+        "CC(C)(c1ccc(Oc2ccc3c(c2)C(=O)N(c2cccc([*:2])c2)C3=O)cc1)"
+        "c1ccc(Oc2ccc3c(c2)C(=O)N([*:1])C3=O)cc1"
+    )
+    bond_length = 0.140
+    reference_density = 1.27
+    default_name = "pei"
+
+
+class _PolystyreneR(MarkedSmilesPolymer):
+    smiles = "c1ccc([C@H](C[*:2])[*:1])cc1"
+    default_name = "ps"
+
+
+class _PolystyreneS(MarkedSmilesPolymer):
+    smiles = "c1ccc([C@@H](C[*:2])[*:1])cc1"
+    default_name = "ps"
+
+
+class _PMMAR(MarkedSmilesPolymer):
+    smiles = "COC(=O)[C@](C)(C[*:1])[*:2]"
+    default_name = "pmma"
+
+
+class _PMMAS(MarkedSmilesPolymer):
+    smiles = "COC(=O)[C@@](C)(C[*:1])[*:2]"
+    default_name = "pmma"
+
+
+TACTICITY_SEQUENCES = {"isotactic": "A", "syndiotactic": "AB", "atactic": None}
+
+
+class _TacticCoPolymer(CoPolymer):
+    """Two enantiomeric repeat units combined into a chain of set tacticity."""
+
+    monomer_R = None
+    monomer_S = None
+    reference_density = None
+    default_name = "polymer"
+
+    def _build(self, length, sequence):
+        # mBuild's recipe wants exactly the monomers that appear in the
+        # sequence, so an isotactic ("A") or a short random sequence that
+        # happens to use one hand must add only that monomer.
+        chain = mb.lib.recipes.Polymer()
+        for label, monomer in (
+            ("A", self.monomer_A),
+            ("B", self.monomer_B),
+        ):
+            if label in sequence:
+                chain.add_monomer(
+                    monomer.monomer,
+                    indices=monomer.bond_indices,
+                    orientation=monomer.bond_orientation,
+                    separation=monomer.bond_length,
+                )
+        chain.build(n=length, sequence=sequence)
+        return chain
+
+    def _generate(self):
+        # `lengths` counts repeat units. Build each chain from an explicit
+        # sequence of that many letters, so a syndiotactic chain is not
+        # `length` copies of "AB".
+        rng = random.Random(self.seed)
+        for idx, length in enumerate(self.lengths):
+            for _ in range(self.n_mols[idx]):
+                if self.tacticity == "atactic":
+                    sequence = "".join(rng.choice("AB") for _ in range(length))
+                elif self.tacticity == "isotactic":
+                    sequence = "A" * length
+                else:
+                    sequence = ("AB" * length)[:length]
+                self._A_count += sequence.count("A")
+                self._B_count += sequence.count("B")
+                mol = self._build(length=1, sequence=sequence)
+                mol.name = f"{self.name}_{length}mer_{sequence}"
+                self._molecules.append(mol)
+
+    def __init__(
+        self,
+        lengths,
+        num_mols,
+        tacticity="atactic",
+        seed=24,
+        name=None,
+        **kwargs,
+    ):
+        if tacticity not in TACTICITY_SEQUENCES:
+            raise ValueError(
+                f"tacticity must be one of {sorted(TACTICITY_SEQUENCES)}."
+            )
+        self.tacticity = tacticity
+        super(_TacticCoPolymer, self).__init__(
+            monomer_A=self.monomer_R,
+            monomer_B=self.monomer_S,
+            lengths=lengths,
+            num_mols=num_mols,
+            name=name or self.default_name,
+            sequence=TACTICITY_SEQUENCES[tacticity],
+            AB_ratio=0.5,
+            seed=seed,
+            **kwargs,
+        )
+
+
+class PolyStyrene(_TacticCoPolymer):
+    """Polystyrene with chosen tacticity. Amorphous density about 1.04 g/cm**3.
+
+    The two enantiomeric repeat units are ``c1ccc([C@H](C[*:2])[*:1])cc1``
+    and its mirror image; ``tacticity`` selects the sequence: ``"atactic"``
+    (random, seeded), ``"isotactic"`` (all one hand) or ``"syndiotactic"``
+    (alternating). Each backbone CH is a stereocenter that the all-atom
+    DPD stereochemistry guard records and protects.
+
+    Parameters
+    ----------
+    lengths : int or list, required
+    num_mols : int or list, required
+    tacticity : {"atactic", "isotactic", "syndiotactic"}, default "atactic"
+    seed : int, default 24
+        Seed for the random atactic sequence.
+    name : str, default "ps"
+
+    """
+
+    monomer_R = _PolystyreneR
+    monomer_S = _PolystyreneS
+    reference_density = 1.04
+    default_name = "ps"
+
+
+class PMMA(_TacticCoPolymer):
+    """Poly(methyl methacrylate) with chosen tacticity. Density about 1.18 g/cm**3.
+
+    Repeat units ``COC(=O)[C@](C)(C[*:1])[*:2]`` and its mirror image; see
+    `PolyStyrene` for the tacticity options. The quaternary backbone carbon
+    is the stereocenter.
+
+    Parameters
+    ----------
+    lengths : int or list, required
+    num_mols : int or list, required
+    tacticity : {"atactic", "isotactic", "syndiotactic"}, default "atactic"
+    seed : int, default 24
+    name : str, default "pmma"
+
+    """
+
+    monomer_R = _PMMAR
+    monomer_S = _PMMAS
+    reference_density = 1.18
+    default_name = "pmma"

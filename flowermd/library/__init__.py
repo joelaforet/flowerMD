@@ -21,14 +21,20 @@ from .forcefields import (
 )
 from .polymers import (
     PEEK,
+    PEI,
     PEKK,
+    PET,
+    PMMA,
     PPS,
     EllipsoidChain,
     EllipsoidChainRand,
     LJChain,
+    MarkedSmilesPolymer,
     PEKK_meta,
     PEKK_para,
+    Polycarbonate,
     PolyEthylene,
+    PolyStyrene,
 )
 from .simulations.aa_phantom_walk import AllAtomPhantomWalk
 from .simulations.phantom_walk import PhantomWalk
