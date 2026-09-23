@@ -22,8 +22,7 @@ from flowermd.utils import EnergyStationarity, HOOMDThermostats
 class AllAtomPhantomWalk(Simulation):
     """Turn an overlapping all-atom placement into minimizer-ready coordinates.
 
-    The all-atom counterpart of the coarse-grained ``PhantomWalk`` proposed
-    in cmelab/flowerMD#264. Chains placed at the target density by
+    Chains placed at the target density by
     `flowermd.library.AllAtomRandomWalk` or `AllAtomLattice` are relaxed with
     dissipative particle dynamics under the `flowermd.library.AllAtomDPD`
     force field until the energy of every force is stationary, then cleaned
