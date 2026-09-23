@@ -9,6 +9,7 @@ from flowermd.library import (
     PEI,
     PES,
     PET,
+    PIM1,
     PMMA,
     AllAtomDPD,
     AllAtomLattice,
@@ -115,3 +116,50 @@ class TestColinaPolymers(BaseTest):
         assert ff.stereo_centers == 3 * 2
         assert "stereochemistry" in ff.forces_by_role
         assert ff.frame.particles.N == system.system.n_particles
+
+
+def _all_bond_lengths(compound):
+    return np.sort(
+        [
+            np.linalg.norm(np.asarray(a.pos) - np.asarray(b.pos))
+            for a, b in compound.bonds()
+        ]
+    )
+
+
+class TestPIM1(BaseTest):
+    def test_ladder_chain_builds(self):
+        from flowermd.internal.monomers import (
+            ladder_monomer_from_marked_smiles,
+        )
+
+        repeat, ports = ladder_monomer_from_marked_smiles(PIM1.smiles)
+        pol = PIM1(lengths=4, num_mols=2)
+        chain = pol.molecules[0]
+        assert len(pol.molecules) == 2
+        # each of the 3 junctions removes 4 placeholder hydrogens (and their
+        # 4 bonds) and adds 2 real bonds
+        assert chain.n_particles == 4 * repeat.n_particles - 4 * 3
+        assert chain.n_bonds == 4 * repeat.n_bonds - 4 * 3 + 2 * 3
+        assert len(list(chain.children)) == 4
+        lengths = _all_bond_lengths(chain)
+        assert lengths.max() < 0.20 and lengths.min() > 0.09
+        assert all(p.element is not None for p in chain.particles())
+        assert PIM1.reference_density > 1.0
+
+    def test_pim1_melt_parameterizes_and_runs(self):
+        from flowermd import Simulation
+
+        chains = PIM1(lengths=2, num_mols=2)
+        system = AllAtomLattice(
+            molecules=chains,
+            density=PIM1.reference_density * u.g / u.cm**3,
+            seed=1,
+        )
+        ff = AllAtomDPD(system.system)
+        assert ff.frame.particles.N == system.system.n_particles
+        sim = Simulation(
+            initial_state=ff.frame, forcefield=ff.hoomd_forces, dt=0.001
+        )
+        sim.run_DPD(n_steps=20)
+        assert all(np.isfinite(f.energy) for f in sim.forces)
