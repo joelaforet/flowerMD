@@ -113,12 +113,66 @@ def molecular_compounds(compound):
     return children
 
 
+# Formal charge by explicit valence (sum of bond orders) for the elements
+# whose ions appear in polymer melts. Every hydrogen is explicit in an
+# all-atom compound, so an atom whose valence is not a neutral one is an ion.
+FORMAL_CHARGE_BY_VALENCE = {
+    "H": {1: 0},
+    "B": {3: 0, 4: -1},
+    "C": {4: 0},
+    "N": {3: 0, 4: 1, 2: -1},
+    "O": {2: 0, 1: -1, 3: 1},
+    "F": {1: 0, 0: -1},
+    "Si": {4: 0},
+    "P": {3: 0, 5: 0, 4: 1},
+    "S": {2: 0, 4: 0, 6: 0, 1: -1, 3: 1},
+    "Cl": {1: 0, 0: -1},
+    "Br": {1: 0, 0: -1},
+    "I": {1: 0, 0: -1},
+    **{metal: {0: 1} for metal in ("Li", "Na", "K", "Rb", "Cs")},
+    **{metal: {0: 2} for metal in ("Be", "Mg", "Ca", "Sr", "Ba", "Zn")},
+}
+
+
+def assign_formal_charges(mol):
+    """Set formal charges on an explicit-hydrogen RDKit molecule in place.
+
+    mBuild does not store formal charges, so a carboxylate oxygen or a
+    sodium ion comes back from `mbuild.Compound.to_rdkit` as a neutral atom
+    that RDKit would complete with an implicit hydrogen. Here implicit
+    hydrogens are switched off and each atom gets the charge its explicit
+    valence implies (see `FORMAL_CHARGE_BY_VALENCE`). Atoms in aromatic
+    bonds and elements not in the table keep charge 0 and are left to
+    RDKit's sanitization.
+    """
+    from rdkit import Chem
+
+    for atom in mol.GetAtoms():
+        atom.SetNoImplicit(True)
+        rule = FORMAL_CHARGE_BY_VALENCE.get(atom.GetSymbol())
+        bonds = atom.GetBonds()
+        if rule is None or any(
+            b.GetBondType() == Chem.BondType.AROMATIC for b in bonds
+        ):
+            continue
+        valence = sum(b.GetBondTypeAsDouble() for b in bonds)
+        if valence != int(valence) or int(valence) not in rule:
+            raise ValueError(
+                f"Atom {atom.GetIdx()} ({atom.GetSymbol()}) has explicit "
+                f"valence {valence:g}, which has no formal-charge rule. "
+                "Check for missing hydrogens or bond orders."
+            )
+        atom.SetFormalCharge(rule[int(valence)])
+
+
 def compound_to_rdkit(compound):
     """Return a sanitized RDKit molecule for `compound`.
 
     mBuild leaves the order of bonds it created itself unspecified; those
     are treated as single bonds. Bond orders read from a SMILES string are
-    kept. Requires RDKit.
+    kept. Formal charges, which mBuild does not store, are inferred from
+    each atom's explicit valence with `assign_formal_charges`. Requires
+    RDKit.
     """
     from rdkit import Chem
 
@@ -126,6 +180,7 @@ def compound_to_rdkit(compound):
     for bond in mol.GetBonds():
         if bond.GetBondType() == Chem.BondType.UNSPECIFIED:
             bond.SetBondType(Chem.BondType.SINGLE)
+    assign_formal_charges(mol)
     Chem.SanitizeMol(mol)
     particles = list(compound.particles())
     if mol.GetNumAtoms() != len(particles):
