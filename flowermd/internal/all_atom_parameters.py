@@ -113,6 +113,26 @@ def molecular_compounds(compound):
     return children
 
 
+def molecule_graph_key(molecule):
+    """Return a hashable key for `molecule`'s elements and bond graph.
+
+    Two molecules share a key when their particles have the same elements
+    in the same order and the same bonds between them. Stereochemistry and
+    coordinates are ignored, which is what per-molecule parameter caches
+    need.
+    """
+    particles = list(molecule.particles())
+    local = {p: i for i, p in enumerate(particles)}
+    return (
+        tuple(p.element.atomic_number for p in particles),
+        tuple(
+            sorted(
+                tuple(sorted((local[a], local[b]))) for a, b in molecule.bonds()
+            )
+        ),
+    )
+
+
 # Formal charge by explicit valence (sum of bond orders) for the elements
 # whose ions appear in polymer melts. Every hydrogen is explicit in an
 # all-atom compound, so an atom whose valence is not a neutral one is an ion.
