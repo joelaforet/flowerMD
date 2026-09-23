@@ -100,8 +100,6 @@ class AllAtomRandomWalk(System):
     the built centroid-to-centroid distance. There is no self-avoidance,
     within or between chains.
 
-    Mirrors the class layout of the coarse-grained ``RandomWalk`` in
-    cmelab/flowerMD#264; reconcile the two when that PR merges.
 
     Parameters
     ----------
