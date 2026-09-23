@@ -7,9 +7,13 @@ import mbuild as mb
 import numpy as np
 from mbuild.coordinate_transform import z_axis_transform
 
-from flowermd import CoPolymer, Polymer
+from flowermd import CoPolymer, Molecule, Polymer
 from flowermd.assets import MON_DIR
-from flowermd.internal.monomers import monomer_from_marked_smiles
+from flowermd.internal import check_return_iterable
+from flowermd.internal.monomers import (
+    ladder_monomer_from_marked_smiles,
+    monomer_from_marked_smiles,
+)
 
 
 class PolyEthylene(Polymer):
@@ -764,3 +768,164 @@ class PMMA(_TacticCoPolymer):
     monomer_S = _PMMAS
     reference_density = 1.18
     default_name = "pmma"
+
+
+class LadderPolymer(Molecule):
+    """A polymer whose repeat units join through two bonds (a ladder polymer).
+
+    mBuild's `Polymer` recipe joins repeats through one bond, so ladder
+    polymers such as PIM-1 are assembled here directly: the repeat unit is
+    embedded once from a SMILES with four marked attachment points, cloned
+    per repeat, and each clone is placed by a rigid fit that puts its two
+    inbound attachment atoms where the previous repeat's outbound
+    placeholders sit (and the reverse), which gives both junction bonds
+    near their built length. Chain ends are capped with hydrogens. This is
+    a purpose-built assembler for the PhantomWalk study; see the class
+    docstring of `PIM1`.
+
+    Subclasses set ``smiles`` with ``[*:1]``/``[*:2]`` on the outbound atoms
+    and ``[*:3]``/``[*:4]`` on the inbound atoms (1 pairs with 3, 2 with 4).
+
+    Parameters
+    ----------
+    lengths : int or list, required
+        Repeat units per chain.
+    num_mols : int or list, required
+        Chains per length.
+    seed : int, default 0
+        RDKit embedding seed for the repeat unit.
+    name : str, optional
+
+    The class attribute ``junction_length`` (nm) is the target for the two
+    junction bonds. Because the two attachment sites on each side are a
+    rigid pair, the four-point fit is a compromise and the junction bonds
+    come out shorter than the target (about 0.09 nm for PIM-1); the DPD
+    stage, with bonded terms scaled by 30, pulls them to the force-field
+    length within the first steps, like the stretched repeat junctions of
+    the lattice placement.
+
+    """
+
+    smiles = None
+    reference_density = None
+    default_name = "ladder"
+    junction_length = 0.136  # nm, aromatic C-O for PIM-1's dioxane links
+
+    def __init__(self, lengths, num_mols, seed=0, name=None, **kwargs):
+        if self.smiles is None:
+            raise NotImplementedError("Subclasses must define `smiles`.")
+        self.lengths = check_return_iterable(lengths)
+        num_mols = check_return_iterable(num_mols)
+        if len(num_mols) != len(self.lengths):
+            raise ValueError("Number of molecules and lengths must be equal.")
+        self.seed = seed
+        self._repeat, self._ports = ladder_monomer_from_marked_smiles(
+            self.smiles, seed=seed, name=name or self.default_name
+        )
+        super(LadderPolymer, self).__init__(
+            num_mols=num_mols, name=name or self.default_name, **kwargs
+        )
+
+    def _load(self):
+        return None
+
+    def _build(self, length):
+        template = self._repeat
+        t_parts = list(template.particles())
+        t_xyz = np.asarray(template.xyz, dtype=float)
+        out_ports = [self._ports[1], self._ports[2]]
+        in_ports = [self._ports[3], self._ports[4]]
+        anchor = {
+            k: t_parts.index(next(iter(t_parts[k].direct_bonds())))
+            for k in out_ports + in_ports
+        }
+        chain = mb.Compound(name=f"{self.name}_{length}mer")
+        repeats = []
+        for k in range(length):
+            repeat = mb.clone(template)
+            repeat.name = self.name
+            xyz = t_xyz.copy()
+            if k:
+                previous = np.asarray(repeats[-1].xyz, dtype=float)
+                # Fit this repeat's (inbound anchor, inbound placeholder) pairs
+                # onto the previous repeat's (outbound placeholder, outbound
+                # anchor) pairs: the anchors land where the placeholders were.
+                # Placeholders sit at a C-H length; extend them to the
+                # junction bond length before fitting so the new bonds
+                # come out at that length.
+                L = self.junction_length
+
+                def extend(points, anchor_i, port_i):
+                    d = points[port_i] - points[anchor_i]
+                    return points[anchor_i] + d / np.linalg.norm(d) * L
+
+                source = np.array(
+                    [
+                        xyz[anchor[in_ports[0]]],
+                        extend(xyz, anchor[in_ports[0]], in_ports[0]),
+                        xyz[anchor[in_ports[1]]],
+                        extend(xyz, anchor[in_ports[1]], in_ports[1]),
+                    ]
+                )
+                target = np.array(
+                    [
+                        extend(previous, anchor[out_ports[0]], out_ports[0]),
+                        previous[anchor[out_ports[0]]],
+                        extend(previous, anchor[out_ports[1]], out_ports[1]),
+                        previous[anchor[out_ports[1]]],
+                    ]
+                )
+                rotation, translation = _kabsch(source, target)
+                xyz = xyz @ rotation.T + translation
+            repeat.xyz = xyz
+            chain.add(repeat)
+            repeats.append(repeat)
+        # junction bonds, then remove the placeholders they replace
+        to_remove = []
+        for k in range(length - 1):
+            a_parts = list(repeats[k].particles())
+            b_parts = list(repeats[k + 1].particles())
+            for out_port, in_port in zip(out_ports, in_ports):
+                chain.add_bond(
+                    (a_parts[anchor[out_port]], b_parts[anchor[in_port]])
+                )
+                to_remove += [a_parts[out_port], b_parts[in_port]]
+        chain.remove(to_remove)
+        return chain
+
+    def _generate(self):
+        for idx, length in enumerate(self.lengths):
+            for _ in range(self.n_mols[idx]):
+                self._molecules.append(self._build(length))
+
+
+def _kabsch(source, target):
+    """Proper rigid transform (R, t) minimizing |R source + t - target|."""
+    s_center = source.mean(axis=0)
+    t_center = target.mean(axis=0)
+    h = (source - s_center).T @ (target - t_center)
+    u, _, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    rotation = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+    return rotation, t_center - s_center @ rotation.T
+
+
+class PIM1(LadderPolymer):
+    """PIM-1, the archetypal polymer of intrinsic microporosity. Bulk density about 1.06 g/cm**3.
+
+    A ladder polymer: each spirobisindane-dioxane repeat joins the next
+    through two C-O bonds, so it cannot be built with the one-bond
+    `flowermd.base.Polymer` recipe and uses `LadderPolymer` instead. The
+    repeat SMILES is the Abbott, Hart and Colina 2013 structure with
+    ``[*:1]``/``[*:2]`` on the dinitrile-ring carbons and ``[*:3]``/``[*:4]``
+    on the catechol oxygens. Included for the PhantomWalk benchmark set;
+    the assembler is intentionally specific to two-bond junctions.
+
+    """
+
+    smiles = (
+        "CC1(C)CC2(CC(C)(C)c3cc(O[*:4])c(O[*:3])cc32)c2cc3c(cc21)"
+        "Oc1c(C#N)c([*:1])c([*:2])c(C#N)c1O3"
+    )
+    reference_density = 1.06
+    default_name = "pim1"
