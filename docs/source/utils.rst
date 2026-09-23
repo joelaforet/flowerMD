@@ -23,3 +23,10 @@ DPD Utilities
 
 .. automodule:: flowermd.utils.dpd_utils
    :members:
+
+
+Polydispersity
+--------------
+
+.. automodule:: flowermd.utils.polydispersity
+   :members:
