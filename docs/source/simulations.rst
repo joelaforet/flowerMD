@@ -8,3 +8,7 @@ Simulations
 .. automodule:: flowermd.library.simulations.tensile
     :members:
     :show-inheritance:
+
+.. automodule:: flowermd.library.simulations.aa_phantom_walk
+    :members:
+    :show-inheritance:
