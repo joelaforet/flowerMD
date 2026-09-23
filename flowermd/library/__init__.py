@@ -32,6 +32,7 @@ from .polymers import (
     LadderPolymer,
     LJChain,
     MarkedSmilesPolymer,
+    PEAAIonomer,
     PEKK_meta,
     PEKK_para,
     Polycarbonate,
