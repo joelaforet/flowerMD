@@ -28,6 +28,7 @@ from .polymers import (
     PEKK_para,
     PolyEthylene,
 )
+from .simulations.aa_phantom_walk import AllAtomPhantomWalk
 from .simulations.tensile import Tensile
 from .surfaces import Graphene
 from .systems import (
