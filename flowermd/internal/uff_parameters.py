@@ -5,7 +5,7 @@ molecule, so the tables come straight from the chemical graph with no
 force-field XML. Bonds are harmonic, angles are harmonic at UFF's
 equilibrium geometry with UFF's local curvature, and torsions are the UFF
 cosine form. UFF inversion (improper) terms are not exported: UFF uses a
-Wilson out-of-plane coordinate that HOOMD's dihedral-based impropers do not
+Wilson-Decius-Cross out-of-plane coordinate that HOOMD's dihedral-based impropers do not
 reproduce, so the UFF source has no impropers by design.
 
 Requires RDKit (imported lazily).
