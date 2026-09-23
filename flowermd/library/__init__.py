@@ -18,9 +18,11 @@ from .forcefields import (
     TableForcefield,
 )
 from .polymers import (
+    P3HT,
     PEEK,
     PEI,
     PEKK,
+    PES,
     PET,
     PMMA,
     PPS,
