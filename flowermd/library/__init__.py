@@ -33,4 +33,10 @@ from .polymers import (
 from .simulations.phantom_walk import PhantomWalk
 from .simulations.tensile import Tensile
 from .surfaces import Graphene
-from .systems import RandomWalk, SingleChainSystem, mbuildSystem
+from .systems import (
+    AllAtomLattice,
+    AllAtomRandomWalk,
+    RandomWalk,
+    SingleChainSystem,
+    mbuildSystem,
+)
