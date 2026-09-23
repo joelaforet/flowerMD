@@ -163,7 +163,7 @@ class AllAtomLattice(System):
     The box is sized for the target density and divided into a near-cubic
     grid with one site per repeat unit (or per chain). Units are visited
     along a serpentine path so consecutive repeats of a chain sit on adjacent
-    sites, each unit gets a random rotation about its centre, and the whole
+    sites, each unit gets a random rotation about its center, and the whole
     lattice gets one random shift. Geometry inside a unit is untouched; bonds
     between repeats are left stretched for the DPD stage. Compared with the
     random walk this gives far fewer close contacts at the same density.
