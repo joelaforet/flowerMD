@@ -10,8 +10,9 @@ fail.
 The workflow has four steps, one flowerMD class each:
 
 1. **Chains**: a `Polymer` preset such as ``PolyEthylene``, ``P3HT``,
-   ``PES``, ``PolyStyrene``, ``PMMA``, ``PET``, ``Polycarbonate``, ``PEI``
-   or ``PIM1``, or any ``MarkedSmilesPolymer`` subclass.
+   ``PES``, ``PolyStyrene``, ``PMMA``, ``PET``, ``Polycarbonate``, ``PEI``,
+   ``PIM1`` or the ionomer ``PEAAIonomer``, or any ``MarkedSmilesPolymer``
+   subclass.
 2. **Placement at the target density**: ``AllAtomRandomWalk`` turns the
    bonds between repeat units to random torsions, so chains start as random
    coils; ``AllAtomLattice`` places whole chains in their built
@@ -55,6 +56,7 @@ Stopping rule                      five samples per 500-step chunk after a
                                    a row; cap 40,000 steps
 FIRE                               100 steps, conservative DPD
 Stereochemistry guard              on, k = 30,000 kcal/mol
+Electrostatics                     off (``electrostatics="smeared"``, below)
 =================================  =========================================
 
 Every value is an argument. Bonded terms can be switched off one kind at a
@@ -64,6 +66,34 @@ any ``stop(sim)`` callable, and ``flowermd.utils.schulz_zimm_lengths``
 gives polydisperse ``lengths`` and ``num_mols``. A capped DPD run still
 returns coordinates, with ``record["dpd_converged"] = False`` and a
 warning; ``require_convergence=True`` makes it an error.
+
+Charged systems and smeared electrostatics
+------------------------------------------
+
+The default protocol has no electrostatics: point charges cannot be used
+with a soft DPD core, because two opposite charges passing through each
+other have an unbounded energy. For ionic polymers the optional smeared
+term replaces each charge with a Gaussian cloud of standard deviation
+``charge_smearing`` (default 2 Å). The pair energy becomes
+``332.06 q_i q_j erf(r / (2 sigma)) / r`` kcal/mol: Coulomb beyond a few
+``sigma``, and finite at contact. HOOMD's PPPM mesh computes it on the GPU,
+with bonded 1-2, 1-3 and 1-4 pairs excluded as for the DPD pair.
+
+.. code-block:: python
+
+    from flowermd.library import PEAAIonomer
+
+    chains = PEAAIonomer(lengths=7, num_mols=200, pattern="EEAEE")
+    system = AllAtomRandomWalk(
+        [chains, chains.counterions("[Na+]")], density=0.85 * u.g / u.cm**3
+    )
+    ff = AllAtomDPD(system.system, charges="nagl", electrostatics="smeared")
+
+``charges`` is ``"formal"``, ``"gasteiger"``, ``"nagl"`` (the AM1-BCC-like
+charges Sage 2.3.0 itself assigns) or an array with one value per particle;
+the system must be neutral when ``electrostatics="smeared"``. Formal
+charges (a carboxylate oxygen, a sodium ion) are inferred from each atom's
+explicit valence, since mBuild does not store them.
 
 Validation
 ----------
