@@ -21,6 +21,12 @@ urls = {Homepage = "https://github.com/cmelab/flowermd"}
 requires-python = ">=3.10"
 dynamic = ["version"]
 
+# flowerMD is installed from conda-forge (see environment.yml). The all-atom
+# DPD force field additionally needs these packages; they are imported lazily
+# so the rest of flowerMD works without them.
+[project.optional-dependencies]
+all-atom = ["rdkit", "openff-toolkit", "openff-interchange"]
+
 [tool.setuptools]
 zip-safe = false
 include-package-data = true

@@ -8,6 +8,7 @@ import numpy as np
 
 from flowermd.assets import FF_DIR
 from flowermd.base import BaseHOOMDForcefield, BaseXMLForcefield
+from flowermd.internal.all_atom_parameters import to_gsd_frame
 
 
 class GAFF(BaseXMLForcefield):
@@ -806,4 +807,212 @@ class EllipsoidFF_DPD(BaseHOOMDForcefield):
             dpd.params[pair] = dict(A=0, gamma=0.1)
             dpd.params[pair].r_cut = 0.0
         forces.append(dpd)
+        return forces
+
+
+class AllAtomDPD(BaseHOOMDForcefield):
+    """All-atom dissipative particle dynamics force field for melt initialization.
+
+    Bonded terms come from a standard atomistic force field, either UFF
+    through RDKit or a SMIRNOFF force field (Sage) through OpenFF, scaled by
+    `bonded_scale`. The nonbonded term is `hoomd.md.pair.DPD`, whose
+    repulsion ``A`` and friction ``gamma`` are weighted per pair by the
+    source's Lennard-Jones well depths,
+    ``A_ij = A * sqrt(eps_i * eps_j) / eps_max``. This is the PhantomWalk
+    all-atom initializer's interaction model: soft repulsion that lets
+    overlapping chains pass through each other while the bonded surrogate
+    keeps bond lengths, angles and torsions near their force-field minima.
+
+    Units are Angstrom, kcal/mol and amu. Because interaction types are
+    named by their coefficients rather than by element pairs, this class
+    also builds the matching `gsd.hoomd.Frame`, exposed as `frame`. Pass
+    ``initial_state=ff.frame, forcefield=ff.hoomd_forces`` to `Simulation`.
+
+    Parameters
+    ----------
+    compound : mbuild.Compound, required
+        All-atom compound with elements on every particle and a periodic
+        ``box``. Every disconnected child is one molecule.
+    bonded : {"uff", "openff"}, default "uff"
+        Source of the bonded parameters and of the per-type epsilons.
+        ``"openff"`` requires openff-toolkit and openff-interchange.
+    A : float, default 1250.0
+        DPD repulsion coefficient before epsilon weighting (kcal/mol/A).
+    gamma : float, default 200.0
+        DPD friction coefficient before epsilon weighting.
+    kT : float, default 1.0
+        DPD thermostat temperature in energy units (kcal/mol).
+    r_cut : float, default 3.5
+        DPD cutoff in Angstrom.
+    bonded_scale : float, default 30.0
+        Multiplier applied to every bonded ``k``.
+    epsilon_weighting : bool, default True
+        Weight ``A`` and ``gamma`` by ``sqrt(eps_i eps_j) / eps_max``.
+        When False every pair uses ``A`` and ``gamma`` unchanged.
+    include_bonds, include_angles, include_dihedrals, include_impropers : bool
+        Include the corresponding bonded force. The topology stays in the
+        frame either way, so neighbor-list exclusions do not change; only
+        the energy term is dropped. UFF provides no impropers.
+    conservative : bool, default False
+        Use `hoomd.md.pair.DPDConservative` (no friction, no noise) instead
+        of `hoomd.md.pair.DPD`. Then `kT` and `gamma` are unused.
+    force_field : str, default "openff-2.3.0.offxml"
+        SMIRNOFF force field when ``bonded="openff"``.
+    nlist : type, default hoomd.md.nlist.Cell
+        Neighbor list class for the pair force.
+    nlist_buffer : float, default 0.4
+        Neighbor list buffer in Angstrom.
+    exclusions : list, default ["bond", "angle", "dihedral"]
+        Neighbor-list exclusions (1-2, 1-3 and 1-4 pairs).
+
+    Attributes
+    ----------
+    hoomd_forces : list
+        The HOOMD forces, bonded terms first and the pair force last.
+    frame : gsd.hoomd.Frame
+        Initial state with types matching the forces.
+    parameters : flowermd.internal.all_atom_parameters.AllAtomParameters
+        The numeric tables the forces were built from.
+    forces_by_role : dict
+        ``{"bond": force, "angle": ..., "dihedral": ..., "improper": ...,
+        "pair": ...}`` for the forces that were created.
+    openff_topology : openff.toolkit.Topology or None
+        The OpenFF topology used for parameter assignment when
+        ``bonded="openff"``, for building a charged Interchange downstream.
+
+    """
+
+    def __init__(
+        self,
+        compound,
+        bonded="uff",
+        A=1250.0,
+        gamma=200.0,
+        kT=1.0,
+        r_cut=3.5,
+        bonded_scale=30.0,
+        epsilon_weighting=True,
+        include_bonds=True,
+        include_angles=True,
+        include_dihedrals=True,
+        include_impropers=True,
+        conservative=False,
+        force_field="openff-2.3.0.offxml",
+        nlist=hoomd.md.nlist.Cell,
+        nlist_buffer=0.4,
+        exclusions=["bond", "angle", "dihedral"],
+    ):
+        if bonded not in ("uff", "openff"):
+            raise ValueError("bonded must be 'uff' or 'openff'.")
+        for name, value in (
+            ("A", A),
+            ("kT", kT),
+            ("r_cut", r_cut),
+            ("bonded_scale", bonded_scale),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive.")
+        if gamma < 0:
+            raise ValueError("gamma cannot be negative.")
+        self.bonded = bonded
+        self.A = A
+        self.gamma = gamma
+        self.kT = kT
+        self.r_cut = r_cut
+        self.bonded_scale = bonded_scale
+        self.epsilon_weighting = epsilon_weighting
+        self.include_bonds = include_bonds
+        self.include_angles = include_angles
+        self.include_dihedrals = include_dihedrals
+        self.include_impropers = include_impropers
+        self.conservative = conservative
+        self.force_field = force_field
+        self.nlist = nlist
+        self.nlist_buffer = nlist_buffer
+        self.exclusions = list(exclusions)
+        self.openff_topology = None
+        if bonded == "uff":
+            from flowermd.internal.uff_parameters import parameterize_uff
+
+            self.parameters = parameterize_uff(compound)
+        else:
+            from flowermd.internal.openff_parameters import (
+                parameterize_openff,
+            )
+
+            self.parameters, self.openff_topology = parameterize_openff(
+                compound, force_field=force_field
+            )
+        self.frame = to_gsd_frame(self.parameters)
+        self.forces_by_role = {}
+        hoomd_forces = self._create_forcefield()
+        super(AllAtomDPD, self).__init__(hoomd_forces)
+
+    def _scaled(self, params):
+        return {
+            name: {**values, "k": self.bonded_scale * values["k"]}
+            for name, values in params.items()
+        }
+
+    def _create_forcefield(self):
+        p = self.parameters
+        forces = []
+        if self.include_bonds and p.bonds:
+            force = hoomd.md.bond.Harmonic()
+            for name, values in self._scaled(p.bond_params).items():
+                force.params[name] = values
+            self.forces_by_role["bond"] = force
+            forces.append(force)
+        if self.include_angles and p.angles:
+            force = hoomd.md.angle.Harmonic()
+            for name, values in self._scaled(p.angle_params).items():
+                force.params[name] = values
+            self.forces_by_role["angle"] = force
+            forces.append(force)
+        if self.include_dihedrals and p.dihedrals:
+            force = hoomd.md.dihedral.Periodic()
+            for name, values in self._scaled(p.dihedral_params).items():
+                force.params[name] = values
+            self.forces_by_role["dihedral"] = force
+            forces.append(force)
+        if self.include_impropers and p.impropers:
+            # SMIRNOFF impropers are periodic torsions over the improper's
+            # own atom order, so the same functional form applies.
+            force = hoomd.md.improper.Periodic()
+            for name, values in self._scaled(p.improper_params).items():
+                force.params[name] = {
+                    "k": values["k"],
+                    "d": values["d"],
+                    "n": values["n"],
+                    "chi0": values["phi0"],
+                }
+            self.forces_by_role["improper"] = force
+            forces.append(force)
+
+        nlist = self.nlist(buffer=self.nlist_buffer, exclusions=self.exclusions)
+        if self.conservative:
+            pair = hoomd.md.pair.DPDConservative(
+                nlist=nlist, default_r_cut=self.r_cut
+            )
+        else:
+            pair = hoomd.md.pair.DPD(
+                nlist=nlist, kT=self.kT, default_r_cut=self.r_cut
+            )
+        types = list(dict.fromkeys(p.particle_types))
+        for first, second in itertools.combinations_with_replacement(types, 2):
+            if self.epsilon_weighting:
+                weight = (
+                    np.sqrt(
+                        p.particle_epsilons[first] * p.particle_epsilons[second]
+                    )
+                    / p.epsilon_ref
+                )
+            else:
+                weight = 1.0
+            values = {"A": self.A * weight}
+            if not self.conservative:
+                values["gamma"] = self.gamma * weight
+            pair.params[(first, second)] = values
+        self.forces_by_role["pair"] = pair
+        forces.append(pair)
         return forces
