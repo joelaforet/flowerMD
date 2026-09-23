@@ -5,7 +5,9 @@ import unyt as u
 from flowermd.internal.monomers import monomer_from_marked_smiles
 from flowermd.internal.stereochemistry import capture_stereochemistry
 from flowermd.library import (
+    P3HT,
     PEI,
+    PES,
     PET,
     PMMA,
     AllAtomDPD,
@@ -60,7 +62,7 @@ class TestMarkedMonomer(BaseTest):
 
 
 class TestColinaPolymers(BaseTest):
-    @pytest.mark.parametrize("cls", [PET, Polycarbonate, PEI])
+    @pytest.mark.parametrize("cls", [PET, Polycarbonate, PEI, P3HT, PES])
     def test_linear_presets_build(self, cls):
         pol = cls(lengths=3, num_mols=2)
         chain = pol.molecules[0]

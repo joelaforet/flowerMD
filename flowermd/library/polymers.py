@@ -603,6 +603,24 @@ class PEI(MarkedSmilesPolymer):
     default_name = "pei"
 
 
+class P3HT(MarkedSmilesPolymer):
+    """Poly(3-hexylthiophene), head-to-tail. Density about 1.09 g/cm**3."""
+
+    smiles = "[*:1]c1sc([*:2])c(CCCCCC)c1"
+    bond_length = 0.145
+    reference_density = 1.094
+    default_name = "p3ht"
+
+
+class PES(MarkedSmilesPolymer):
+    """Poly(ether sulfone), [-O-C6H4-SO2-C6H4-]n. Density about 1.37 g/cm**3."""
+
+    smiles = "O=S(=O)(c1ccc(O[*:1])cc1)c1ccc([*:2])cc1"
+    bond_length = 0.138
+    reference_density = 1.37
+    default_name = "pes"
+
+
 class _PolystyreneR(MarkedSmilesPolymer):
     smiles = "c1ccc([C@H](C[*:2])[*:1])cc1"
     default_name = "ps"
