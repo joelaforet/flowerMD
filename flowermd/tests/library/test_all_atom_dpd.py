@@ -48,6 +48,18 @@ class TestAllAtomDPD(BaseTest):
         assert 0.9 < frame.particles.mass.min() < 1.2  # hydrogen, amu
         assert 11.9 < frame.particles.mass.max() < 12.2  # carbon, amu
 
+    def test_frame_images_recover_input_positions(self):
+        compound = _pe_melt()
+        # push one chain across the periodic boundary
+        chain = list(compound.children)[0]
+        chain.translate(np.asarray(compound.box.lengths) * 0.9)
+        ff = AllAtomDPD(compound)
+        frame = ff.frame
+        box = np.asarray(frame.configuration.box[:3])
+        assert np.all(np.abs(frame.particles.position) <= box / 2 + 1e-9)
+        unwrapped = frame.particles.position + frame.particles.image * box
+        assert np.allclose(unwrapped, np.asarray(compound.xyz) * 10.0)
+
     def test_bonded_scale_and_epsilon_weighting(self):
         compound = _pe_melt()
         ff = AllAtomDPD(compound, A=100.0, gamma=10.0, bonded_scale=7.0)

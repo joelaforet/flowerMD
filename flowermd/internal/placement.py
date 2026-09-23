@@ -80,13 +80,43 @@ def axial_rotation(axis, angle):
 
 
 def repeat_units(chain):
-    """Return the chain's repeat compounds in backbone order.
+    """Return the chain's rigid units as lists of particle indices.
 
-    Uses the chain's children (mBuild's `Polymer` recipe adds one child per
-    repeat, in sequence). A chain with no children is one rigid unit.
+    Indices refer to ``list(chain.particles())``. Each multi-atom child of
+    the chain (a repeat unit built by mBuild's `Polymer` recipe) is one unit.
+    A single-atom child (an end cap, or every atom of a molecule loaded
+    straight from SMILES) is merged into the unit of an atom it is bonded
+    to, so a small molecule is one rigid unit and a cap moves with its
+    repeat. A chain without children is one unit.
     """
-    children = [child for child in chain.children if child.n_particles]
-    return children if children else [chain]
+    particles = list(chain.particles())
+    index = {p: i for i, p in enumerate(particles)}
+    children = [c for c in chain.children if c.n_particles]
+    units = [
+        [index[p] for p in c.particles()] for c in children if c.n_particles > 1
+    ]
+    if not units:
+        return [list(range(len(particles)))]
+    owner = {}
+    for unit_id, members in enumerate(units):
+        for i in members:
+            owner[i] = unit_id
+    bonded = {i: [] for i in range(len(particles))}
+    for a, b in chain.bonds():
+        bonded[index[a]].append(index[b])
+        bonded[index[b]].append(index[a])
+    loose = [
+        index[p] for c in children if c.n_particles == 1 for p in c.particles()
+    ]
+    for i in loose:
+        home = next((owner[j] for j in bonded[i] if j in owner), None)
+        if home is None:
+            units.append([i])
+            home = len(units) - 1
+        else:
+            units[home].append(i)
+        owner[i] = home
+    return units
 
 
 def _far_side(adjacency, near, far):

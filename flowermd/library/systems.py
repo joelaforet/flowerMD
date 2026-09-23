@@ -129,12 +129,8 @@ class AllAtomRandomWalk(System):
         )
         rng = np.random.default_rng(self.seed)
         for chain in self.all_molecules:
-            particles = list(chain.particles())
-            index = {p: i for i, p in enumerate(particles)}
-            units = [
-                [index[p] for p in repeat.particles()]
-                for repeat in repeat_units(chain)
-            ]
+            index = {p: i for i, p in enumerate(chain.particles())}
+            units = repeat_units(chain)
             bonds = [(index[a], index[b]) for a, b in chain.bonds()]
             start = rng.uniform(0.0, self.target_box)
             chain.xyz = random_walk_conformation(

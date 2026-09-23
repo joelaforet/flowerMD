@@ -235,13 +235,16 @@ def _set_groups(container, groups, types):
 def to_gsd_frame(parameters):
     """Build a `gsd.hoomd.Frame` whose types match the parameter tables.
 
-    Positions are wrapped into the box. Bond, angle, dihedral and improper
-    types are the parameter-set names, so `AllAtomDPD` force parameters
-    apply one to one.
+    Positions are wrapped into the box with matching image flags. Bond,
+    angle, dihedral and improper types are the parameter-set names, so
+    `AllAtomDPD` force parameters apply one to one.
     """
     lengths = np.asarray(parameters.box_lengths_a, dtype=float)
-    positions = np.asarray(parameters.positions_a, dtype=float)
-    positions = (positions + lengths / 2) % lengths - lengths / 2
+    unwrapped = np.asarray(parameters.positions_a, dtype=float)
+    # Keep the image flags so unwrapping the state recovers the input
+    # coordinates and molecules straddling the boundary stay whole.
+    images = np.floor((unwrapped + lengths / 2) / lengths).astype(np.int32)
+    positions = unwrapped - images * lengths
     frame = gsd.hoomd.Frame()
     frame.configuration.box = [*lengths, 0.0, 0.0, 0.0]
     frame.particles.N = len(positions)
@@ -251,6 +254,7 @@ def to_gsd_frame(parameters):
         [unique.index(t) for t in parameters.particle_types], dtype=np.uint32
     )
     frame.particles.position = positions
+    frame.particles.image = images
     frame.particles.mass = np.asarray(parameters.masses_amu, dtype=float)
     frame.particles.charge = np.zeros(len(positions))
     _set_groups(frame.bonds, parameters.bonds, parameters.bond_types)

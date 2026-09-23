@@ -3,8 +3,10 @@ import pytest
 import unyt as u
 
 from flowermd import Simulation
+from flowermd.base import Molecule
 from flowermd.internal.placement import (
     random_walk_conformation,
+    repeat_units,
     serpentine_lattice_sites,
 )
 from flowermd.library import (
@@ -158,6 +160,27 @@ class TestAllAtomPlacement(BaseTest):
             system = AllAtomLattice(molecules=chains, density=0.5)
         assert system.n_molecules == 4
         assert system.system.n_particles == chains.n_particles
+
+    @pytest.mark.parametrize("system_cls", [AllAtomRandomWalk, AllAtomLattice])
+    def test_small_molecules_stay_rigid(self, system_cls):
+        # a molecule loaded from SMILES has one child per atom; it must move
+        # as one rigid unit, not atom by atom
+        mols = Molecule(num_mols=5, smiles="C[C@H](F)Cl")
+        before = [_bond_lengths(m) for m in mols.molecules]
+        system = system_cls(molecules=mols, density=DENSITY, seed=2)
+        for chain, b in zip(system.system.children, before):
+            assert len(repeat_units(chain)) == 1
+            assert np.allclose(_bond_lengths(chain), b)
+        centers = np.array([c.xyz.mean(axis=0) for c in system.system.children])
+        assert np.linalg.norm(centers[0] - centers[1]) > 0.1
+
+    def test_cap_atoms_follow_their_repeat(self):
+        chain = PolyEthylene(lengths=3, num_mols=1).molecules[0]
+        units = repeat_units(chain)
+        assert sorted(i for u in units for i in u) == list(
+            range(chain.n_particles)
+        )
+        assert len(units) == 3
 
     @pytest.mark.parametrize("system_cls", [AllAtomRandomWalk, AllAtomLattice])
     def test_end_to_end_dpd(self, system_cls):
