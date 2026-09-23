@@ -255,7 +255,7 @@ def place_along_path(repeats, junctions, path, twist=GOLDEN_ANGLE):
 
 
 def serpentine_lattice_sites(count, box_lengths):
-    """Cell-centre sites of a near-cubic grid, ordered along a serpentine path.
+    """Cell-center sites of a near-cubic grid, ordered along a serpentine path.
 
     Consecutive sites are adjacent, so consecutive repeats of a chain land
     next to each other. Returns ``(sites, grid_shape)``; unused sites are at
