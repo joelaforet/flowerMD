@@ -62,7 +62,7 @@ class TestMarkedMonomer(BaseTest):
         assert np.sign(vols[0]) == -np.sign(vols[1])
 
 
-class TestColinaPolymers(BaseTest):
+class TestAtomisticPolymers(BaseTest):
     @pytest.mark.parametrize("cls", [PET, Polycarbonate, PEI, P3HT, PES])
     def test_linear_presets_build(self, cls):
         pol = cls(lengths=3, num_mols=2)
