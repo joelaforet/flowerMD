@@ -231,7 +231,12 @@ def capture_stereochemistry(compound, planar_tolerance=0.05):
                     {
                         "stage": "capture",
                         "center_index": indices[center],
-                        "reason": "nonfinite or near-planar reference",
+                        "reason": (
+                            "nonfinite or near-planar reference geometry. "
+                            "AllAtomRandomWalk and AllAtomLattice keep every "
+                            "stereocenter of the built chain, so check the "
+                            "input geometry."
+                        ),
                         "normalized_volume": volume,
                         "n_centers": 1,
                         "near_planar_count": 1,

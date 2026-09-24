@@ -23,3 +23,10 @@ Stopping Criteria
 
 .. automodule:: flowermd.utils.stopping
    :members:
+
+
+Polydispersity
+--------------
+
+.. automodule:: flowermd.utils.polydispersity
+   :members:

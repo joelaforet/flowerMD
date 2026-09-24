@@ -1,0 +1,207 @@
+import mbuild as mb
+import numpy as np
+import pytest
+import unyt as u
+
+from flowermd.internal.monomers import monomer_from_marked_smiles
+from flowermd.internal.stereochemistry import (
+    audit_stereochemistry,
+    capture_stereochemistry,
+)
+from flowermd.library import (
+    P3HT,
+    PEI,
+    PES,
+    PET,
+    PIM1,
+    PMMA,
+    AllAtomDPD,
+    AllAtomLattice,
+    AllAtomRandomWalk,
+    MarkedSmilesPolymer,
+    Polycarbonate,
+    PolyStyrene,
+)
+from flowermd.tests import BaseTest
+
+pytest.importorskip("rdkit")
+
+
+class TestMarkedMonomer(BaseTest):
+    def test_ports_become_hydrogens(self):
+        comp, idx = monomer_from_marked_smiles("c1ccc([C@H](C[*:2])[*:1])cc1")
+        parts = list(comp.particles())
+        assert comp.n_particles == 18  # C8H8 + two attachment H
+        assert [parts[i].name for i in idx] == ["H", "H"]
+        for i in idx:
+            heavy = next(iter(parts[i].direct_bonds()))
+            d = np.linalg.norm(np.asarray(parts[i].pos) - np.asarray(heavy.pos))
+            assert d == pytest.approx(0.109, abs=1e-6)
+
+    def test_bad_marks(self):
+        with pytest.raises(ValueError):
+            monomer_from_marked_smiles("CC[*:1]")
+        with pytest.raises(ValueError):
+            monomer_from_marked_smiles("C([*:1])C[*:1]")
+
+    def test_enantiomers_have_opposite_handedness(self):
+        from flowermd.internal.stereochemistry import normalized_volume
+
+        vols = []
+        for smiles in (
+            "c1ccc([C@H](C[*:2])[*:1])cc1",
+            "c1ccc([C@@H](C[*:2])[*:1])cc1",
+        ):
+            comp, _ = monomer_from_marked_smiles(smiles)
+            parts = list(comp.particles())
+            center = 4  # the [C@H] atom in SMILES order
+            neighbors = sorted(
+                i
+                for i, p in enumerate(parts)
+                if p in parts[center].direct_bonds()
+            )
+            assert len(neighbors) == 4
+            xyz = np.asarray(comp.xyz) * 10.0
+            vols.append(normalized_volume(xyz[neighbors] - xyz[center]))
+        assert abs(vols[0]) > 0.3
+        assert np.sign(vols[0]) == -np.sign(vols[1])
+
+
+class TestAtomisticPolymers(BaseTest):
+    @pytest.mark.parametrize("cls", [PET, Polycarbonate, PEI, P3HT, PES])
+    def test_linear_presets_build(self, cls):
+        pol = cls(lengths=3, num_mols=2)
+        chain = pol.molecules[0]
+        assert len(pol.molecules) == 2
+        # n repeats (monomer minus its two attachment H) plus two caps
+        n_repeat_atoms = (
+            monomer_from_marked_smiles(cls.smiles)[0].n_particles - 2
+        )
+        assert chain.n_particles == 3 * n_repeat_atoms + 2
+        assert len(list(chain.children)) == 3
+        assert cls.reference_density > 1.0
+        assert isinstance(pol, MarkedSmilesPolymer)
+
+    @pytest.mark.parametrize("cls", [PolyStyrene, PMMA])
+    def test_tactic_presets_have_stereocenters(self, cls):
+        pol = cls(lengths=4, num_mols=1, tacticity="atactic", seed=3)
+        chain = pol.molecules[0]
+        chain.box = None
+        ref = capture_stereochemistry(chain)
+        # the head-end repeat is capped with H, which makes its backbone
+        # carbon achiral, so a chain of n repeats has n - 1 stereocenters
+        assert len(ref.centers) == 3
+        assert pol.tacticity == "atactic"
+
+    def test_tacticity_sequences(self):
+        iso = PolyStyrene(lengths=6, num_mols=1, tacticity="isotactic")
+        syn = PolyStyrene(lengths=6, num_mols=1, tacticity="syndiotactic")
+        assert iso.sequence == "A" and syn.sequence == "AB"
+        assert iso.molecules[0].n_particles == syn.molecules[0].n_particles
+        assert iso.molecules[0].name == "ps_6mer_AAAAAA"
+        assert syn.molecules[0].name == "ps_6mer_ABABAB"
+        assert len(list(syn.molecules[0].children)) == 6
+        with pytest.raises(ValueError):
+            PolyStyrene(lengths=2, num_mols=1, tacticity="random")
+
+    def test_atactic_seed_changes_sequence(self):
+        a = PolyStyrene(lengths=12, num_mols=1, tacticity="atactic", seed=1)
+        b = PolyStyrene(lengths=12, num_mols=1, tacticity="atactic", seed=2)
+        assert (
+            a.molecules[0].name != b.molecules[0].name
+        )  # name encodes the sequence
+
+    def test_polystyrene_melt_end_to_end(self):
+        chains = PolyStyrene(lengths=3, num_mols=3, tacticity="atactic", seed=5)
+        system = AllAtomLattice(
+            molecules=chains,
+            density=PolyStyrene.reference_density * u.g / u.cm**3,
+        )
+        ff = AllAtomDPD(system.system)
+        assert ff.stereo_centers == 3 * 2
+        assert "stereochemistry" in ff.forces_by_role
+        assert ff.frame.particles.N == system.system.n_particles
+
+    @pytest.mark.parametrize("cls", [PolyStyrene, PMMA])
+    @pytest.mark.parametrize("placement", [AllAtomRandomWalk, AllAtomLattice])
+    def test_placement_keeps_backbone_stereocenters(self, cls, placement):
+        # a backbone center has one substituent in the next repeat; the
+        # placement must keep the handedness the preset built
+        chains = cls(lengths=8, num_mols=4, tacticity="atactic", seed=2)
+        built = capture_stereochemistry(
+            mb.Compound([mb.clone(chain) for chain in chains.molecules])
+        )
+        system = placement(
+            molecules=chains,
+            density=cls.reference_density * u.g / u.cm**3,
+            seed=3,
+        )
+        audit = audit_stereochemistry(
+            built,
+            np.asarray(system.system.xyz) * 10.0,
+            box_lengths=np.asarray(system.target_box) * 10.0,
+        )
+        assert audit["n_centers"] == 4 * 7
+        assert audit["inverted_count"] == 0
+        assert audit["near_planar_count"] == 0
+
+
+def _all_bond_lengths(compound):
+    return np.sort(
+        [
+            np.linalg.norm(np.asarray(a.pos) - np.asarray(b.pos))
+            for a, b in compound.bonds()
+        ]
+    )
+
+
+class TestPIM1(BaseTest):
+    def test_ladder_chain_builds(self):
+        from flowermd.internal.monomers import (
+            ladder_monomer_from_marked_smiles,
+        )
+
+        repeat, ports = ladder_monomer_from_marked_smiles(PIM1.smiles)
+        pol = PIM1(lengths=4, num_mols=2)
+        chain = pol.molecules[0]
+        assert len(pol.molecules) == 2
+        # each of the 3 junctions removes 4 placeholder hydrogens (and their
+        # 4 bonds) and adds 2 real bonds
+        assert chain.n_particles == 4 * repeat.n_particles - 4 * 3
+        assert chain.n_bonds == 4 * repeat.n_bonds - 4 * 3 + 2 * 3
+        assert len(list(chain.children)) == 4
+        lengths = _all_bond_lengths(chain)
+        assert lengths.max() < 0.20 and lengths.min() > 0.09
+        assert all(p.element is not None for p in chain.particles())
+        assert PIM1.reference_density > 1.0
+
+    def test_random_walk_keeps_ladder_junctions(self):
+        # each PIM-1 junction is two bonds in a ring: no free torsion, so
+        # the random walk must leave every bond at its built length
+        chains = PIM1(lengths=4, num_mols=2)
+
+        before = [_all_bond_lengths(c) for c in chains.molecules]
+        system = AllAtomRandomWalk(
+            molecules=chains,
+            density=PIM1.reference_density * u.g / u.cm**3,
+            seed=4,
+        )
+        for chain, b in zip(system.system.children, before):
+            assert np.allclose(_all_bond_lengths(chain), b, atol=1e-6)
+
+    def test_pim1_melt_parameterizes_and_runs(self):
+        from flowermd import Simulation
+
+        chains = PIM1(lengths=2, num_mols=2)
+        system = AllAtomLattice(
+            molecules=chains,
+            density=PIM1.reference_density * u.g / u.cm**3,
+            seed=1,
+        )
+        ff = AllAtomDPD(system.system)
+        assert ff.frame.particles.N == system.system.n_particles
+        sim = Simulation(
+            initial_state=ff.frame, forcefield=ff.hoomd_forces, dt=0.001
+        )
+        sim.run_DPD(n_steps=20)
+        assert all(np.isfinite(f.energy) for f in sim.forces)

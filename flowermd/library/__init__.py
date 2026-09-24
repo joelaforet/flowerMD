@@ -18,15 +18,25 @@ from .forcefields import (
     TableForcefield,
 )
 from .polymers import (
+    P3HT,
     PEEK,
+    PEI,
     PEKK,
+    PES,
+    PET,
+    PIM1,
+    PMMA,
     PPS,
     EllipsoidChain,
     EllipsoidChainRand,
+    LadderPolymer,
     LJChain,
+    MarkedSmilesPolymer,
     PEKK_meta,
     PEKK_para,
+    Polycarbonate,
     PolyEthylene,
+    PolyStyrene,
 )
 from .simulations.aa_phantom_walk import AllAtomPhantomWalk
 from .simulations.tensile import Tensile

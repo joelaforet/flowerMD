@@ -12,6 +12,7 @@ from .actions import (
 )
 from .base_types import HOOMDThermostats
 from .constraints import create_rigid_ellipsoid_chain, set_bond_constraints
+from .polydispersity import schulz_zimm_lengths
 from .stopping import EnergyStationarity
 from .utils import (
     _calculate_box_length,
