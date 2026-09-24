@@ -2,6 +2,7 @@
 
 import itertools
 import os
+import time
 
 import hoomd
 import numpy as np
@@ -9,6 +10,11 @@ import numpy as np
 from flowermd.assets import FF_DIR
 from flowermd.base import BaseHOOMDForcefield, BaseXMLForcefield
 from flowermd.internal.all_atom_parameters import to_gsd_frame
+from flowermd.internal.stereochemistry import (
+    append_stereochemistry_dihedrals,
+    build_stereochemistry_force,
+    capture_stereochemistry,
+)
 
 
 class GAFF(BaseXMLForcefield):
@@ -858,6 +864,15 @@ class AllAtomDPD(BaseHOOMDForcefield):
         of `hoomd.md.pair.DPD`. Then `kT` and `gamma` are unused.
     force_field : str, default "openff-2.3.0.offxml"
         SMIRNOFF force field when ``bonded="openff"``.
+    protect_stereochemistry : bool, default True
+        Record the handedness of every tetrahedral stereocenter and add a
+        native periodic-dihedral restraint (see
+        `flowermd.internal.stereochemistry`) that keeps it during DPD and
+        FIRE. Has no effect on molecules without stereocenters.
+    stereo_k : float, default 30000.0
+        Restraint strength in kcal/mol. Not multiplied by `bonded_scale`.
+    stereo_planar_tolerance : float, default 0.05
+        Normalized-volume threshold below which a center counts as planar.
     nlist : type, default hoomd.md.nlist.Cell
         Neighbor list class for the pair force.
     nlist_buffer : float, default 0.4
@@ -879,6 +894,11 @@ class AllAtomDPD(BaseHOOMDForcefield):
     openff_topology : openff.toolkit.Topology or None
         The OpenFF topology used for parameter assignment when
         ``bonded="openff"``, for building a charged Interchange downstream.
+    stereo_reference : flowermd.internal.stereochemistry.StereoReference or None
+        The recorded stereocenters when `protect_stereochemistry` is True.
+    timings : dict
+        Wall time in seconds for ``parameterization`` and ``setup`` (frame
+        and force construction).
 
     """
 
@@ -898,6 +918,9 @@ class AllAtomDPD(BaseHOOMDForcefield):
         include_impropers=True,
         conservative=False,
         force_field="openff-2.3.0.offxml",
+        protect_stereochemistry=True,
+        stereo_k=30000.0,
+        stereo_planar_tolerance=0.05,
         nlist=hoomd.md.nlist.Cell,
         nlist_buffer=0.4,
         exclusions=["bond", "angle", "dihedral"],
@@ -914,6 +937,13 @@ class AllAtomDPD(BaseHOOMDForcefield):
                 raise ValueError(f"{name} must be positive.")
         if gamma < 0:
             raise ValueError("gamma cannot be negative.")
+        if protect_stereochemistry and stereo_k <= 0:
+            raise ValueError("stereo_k must be positive.")
+        self.protect_stereochemistry = protect_stereochemistry
+        self.stereo_k = stereo_k
+        self.stereo_planar_tolerance = stereo_planar_tolerance
+        self.stereo_reference = None
+        self.timings = {}
         self.bonded = bonded
         self.A = A
         self.gamma = gamma
@@ -931,6 +961,7 @@ class AllAtomDPD(BaseHOOMDForcefield):
         self.nlist_buffer = nlist_buffer
         self.exclusions = list(exclusions)
         self.openff_topology = None
+        started = time.perf_counter()
         if bonded == "uff":
             from flowermd.internal.uff_parameters import parameterize_uff
 
@@ -943,10 +974,41 @@ class AllAtomDPD(BaseHOOMDForcefield):
             self.parameters, self.openff_topology = parameterize_openff(
                 compound, force_field=force_field
             )
+        if protect_stereochemistry:
+            self.stereo_reference = capture_stereochemistry(
+                compound, planar_tolerance=stereo_planar_tolerance
+            )
+        parameterized = time.perf_counter()
         self.frame = to_gsd_frame(self.parameters)
+        if self.stereo_reference is not None and self.stereo_reference.centers:
+            append_stereochemistry_dihedrals(self.frame, self.stereo_reference)
         self.forces_by_role = {}
         hoomd_forces = self._create_forcefield()
+        self.timings = {
+            "parameterization": parameterized - started,
+            "setup": time.perf_counter() - parameterized,
+        }
         super(AllAtomDPD, self).__init__(hoomd_forces)
+
+    @property
+    def stereo_centers(self):
+        """Number of protected tetrahedral centers (0 when unprotected)."""
+        if self.stereo_reference is None:
+            return 0
+        return len(self.stereo_reference.centers)
+
+    def conservative_forces(self):
+        """The same bonded and restraint forces with a conservative DPD pair.
+
+        `hoomd.md.pair.DPDConservative` keeps only the repulsion ``A``, no
+        friction or noise, which is what a minimizer such as FIRE needs.
+        The bonded force objects are shared with `hoomd_forces`, so attach
+        only one of the two lists to an integrator at a time.
+        """
+        pair = self.forces_by_role["pair"]
+        return [f for f in self.hoomd_forces if f is not pair] + [
+            self._pair_force(conservative=True)
+        ]
 
     def _scaled(self, params):
         return {
@@ -989,8 +1051,36 @@ class AllAtomDPD(BaseHOOMDForcefield):
             self.forces_by_role["improper"] = force
             forces.append(force)
 
+        stereo_types = (
+            self.stereo_reference.type_names if self.stereo_centers else ()
+        )
+        if stereo_types and "dihedral" in self.forces_by_role:
+            # A dihedral force must cover every dihedral type in the state.
+            for name in stereo_types:
+                self.forces_by_role["dihedral"].params[name] = {
+                    "k": 0.0,
+                    "d": -1,
+                    "n": 1,
+                    "phi0": 0.0,
+                }
+        if stereo_types:
+            restraint = build_stereochemistry_force(
+                self.stereo_reference,
+                self.stereo_k,
+                dihedral_types=list(p.dihedral_params),
+            )
+            self.forces_by_role["stereochemistry"] = restraint
+            forces.append(restraint)
+
+        pair = self._pair_force(conservative=self.conservative)
+        self.forces_by_role["pair"] = pair
+        forces.append(pair)
+        return forces
+
+    def _pair_force(self, conservative):
+        p = self.parameters
         nlist = self.nlist(buffer=self.nlist_buffer, exclusions=self.exclusions)
-        if self.conservative:
+        if conservative:
             pair = hoomd.md.pair.DPDConservative(
                 nlist=nlist, default_r_cut=self.r_cut
             )
@@ -1010,9 +1100,7 @@ class AllAtomDPD(BaseHOOMDForcefield):
             else:
                 weight = 1.0
             values = {"A": self.A * weight}
-            if not self.conservative:
+            if not conservative:
                 values["gamma"] = self.gamma * weight
             pair.params[(first, second)] = values
-        self.forces_by_role["pair"] = pair
-        forces.append(pair)
-        return forces
+        return pair
