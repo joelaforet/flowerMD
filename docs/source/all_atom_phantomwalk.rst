@@ -12,10 +12,11 @@ The workflow has four steps, one flowerMD class each:
 1. **Chains**: a `Polymer` preset such as ``PolyEthylene``, ``P3HT``,
    ``PES``, ``PolyStyrene``, ``PMMA``, ``PET``, ``Polycarbonate``, ``PEI``
    or ``PIM1``, or any ``MarkedSmilesPolymer`` subclass.
-2. **Placement at the target density**: ``AllAtomRandomWalk`` or
-   ``AllAtomLattice``. Chains overlap freely; that is intended. Use
-   ``AllAtomLattice(unit="chain")`` for polymers with backbone
-   stereocenters.
+2. **Placement at the target density**: ``AllAtomRandomWalk`` turns the
+   bonds between repeat units to random torsions, so chains start as random
+   coils; ``AllAtomLattice`` places whole chains in their built
+   conformation. Both keep every bond length, bond angle and stereocenter
+   of the built chains. Chains overlap freely; that is intended.
 3. **Interactions**: ``AllAtomDPD``, bonded terms from UFF (default) or
    Sage 2.3.0, scaled up, with a soft DPD pair force whose coefficients are
    weighted by each pair's Lennard-Jones well depth. Stereocenters are
@@ -28,11 +29,11 @@ The workflow has four steps, one flowerMD class each:
 
     import unyt as u
     from flowermd.library import (
-        AllAtomDPD, AllAtomLattice, AllAtomPhantomWalk, PolyStyrene,
+        AllAtomDPD, AllAtomPhantomWalk, AllAtomRandomWalk, PolyStyrene,
     )
 
     chains = PolyStyrene(lengths=100, num_mols=13, tacticity="atactic")
-    system = AllAtomLattice(chains, density=1.04 * u.g / u.cm**3, unit="chain")
+    system = AllAtomRandomWalk(chains, density=1.04 * u.g / u.cm**3)
     ff = AllAtomDPD(system.system)
     sim = AllAtomPhantomWalk.from_system(system, forcefield=ff)
     record = sim.run_initialization()
