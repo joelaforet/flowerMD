@@ -1,9 +1,13 @@
+import mbuild as mb
 import numpy as np
 import pytest
 import unyt as u
 
 from flowermd.internal.monomers import monomer_from_marked_smiles
-from flowermd.internal.stereochemistry import capture_stereochemistry
+from flowermd.internal.stereochemistry import (
+    audit_stereochemistry,
+    capture_stereochemistry,
+)
 from flowermd.library import (
     P3HT,
     PEI,
@@ -13,6 +17,7 @@ from flowermd.library import (
     PMMA,
     AllAtomDPD,
     AllAtomLattice,
+    AllAtomRandomWalk,
     MarkedSmilesPolymer,
     Polycarbonate,
     PolyStyrene,
@@ -117,6 +122,29 @@ class TestAtomisticPolymers(BaseTest):
         assert "stereochemistry" in ff.forces_by_role
         assert ff.frame.particles.N == system.system.n_particles
 
+    @pytest.mark.parametrize("cls", [PolyStyrene, PMMA])
+    @pytest.mark.parametrize("placement", [AllAtomRandomWalk, AllAtomLattice])
+    def test_placement_keeps_backbone_stereocenters(self, cls, placement):
+        # a backbone center has one substituent in the next repeat; the
+        # placement must keep the handedness the preset built
+        chains = cls(lengths=8, num_mols=4, tacticity="atactic", seed=2)
+        built = capture_stereochemistry(
+            mb.Compound([mb.clone(chain) for chain in chains.molecules])
+        )
+        system = placement(
+            molecules=chains,
+            density=cls.reference_density * u.g / u.cm**3,
+            seed=3,
+        )
+        audit = audit_stereochemistry(
+            built,
+            np.asarray(system.system.xyz) * 10.0,
+            box_lengths=np.asarray(system.target_box) * 10.0,
+        )
+        assert audit["n_centers"] == 4 * 7
+        assert audit["inverted_count"] == 0
+        assert audit["near_planar_count"] == 0
+
 
 def _all_bond_lengths(compound):
     return np.sort(
@@ -146,6 +174,20 @@ class TestPIM1(BaseTest):
         assert lengths.max() < 0.20 and lengths.min() > 0.09
         assert all(p.element is not None for p in chain.particles())
         assert PIM1.reference_density > 1.0
+
+    def test_random_walk_keeps_ladder_junctions(self):
+        # each PIM-1 junction is two bonds in a ring: no free torsion, so
+        # the random walk must leave every bond at its built length
+        chains = PIM1(lengths=4, num_mols=2)
+
+        before = [_all_bond_lengths(c) for c in chains.molecules]
+        system = AllAtomRandomWalk(
+            molecules=chains,
+            density=PIM1.reference_density * u.g / u.cm**3,
+            seed=4,
+        )
+        for chain, b in zip(system.system.children, before):
+            assert np.allclose(_all_bond_lengths(chain), b, atol=1e-6)
 
     def test_pim1_melt_parameterizes_and_runs(self):
         from flowermd import Simulation
