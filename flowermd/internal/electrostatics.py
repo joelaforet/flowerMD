@@ -8,16 +8,38 @@ a Gaussian cloud of standard deviation ``sigma`` gives the pair energy
 
 which is ordinary Coulomb beyond a few ``sigma`` and levels off at
 ``C q_i q_j 2 kappa / sqrt(pi)`` as ``r -> 0``, with ``C`` the Coulomb
-constant. This is the smeared-charge model used in DPD electrostatics
-(Groot, J. Chem. Phys. 118, 11265, 2003).
+constant. This is the Gaussian charge model of Warren et al. [1], Eq. (2).
 
 This is exactly the reciprocal-space part of an Ewald sum with splitting
-parameter ``kappa``, so HOOMD's PPPM mesh computes it on the GPU with
-per-particle charges and periodic images. `SmearedCoulomb` is
-`hoomd.md.long_range.pppm.Coulomb` without the real-space `hoomd.md.pair.Ewald`
-term and with ``kappa`` set from ``sigma`` instead of from an accuracy
-target. PPPM subtracts the mesh interaction of neighbor-list exclusions, so
-bonded 1-2, 1-3 and 1-4 pairs are excluded as they are for the DPD pair.
+parameter ``kappa``. As in [1], the splitting parameter is tied to the
+charge size so the real-space term can be dropped: `SmearedCoulomb` is
+`hoomd.md.long_range.pppm.Coulomb` [2] without the real-space
+`hoomd.md.pair.Ewald` term and with ``kappa`` set from ``sigma`` instead of
+from an accuracy target, so HOOMD's PPPM mesh computes it on the GPU with
+per-particle charges and periodic images. PPPM subtracts the mesh
+interaction of neighbor-list exclusions, so bonded 1-2, 1-3 and 1-4 pairs
+are excluded as they are for the DPD pair.
+
+For background, earlier smeared-charge DPD methods used other charge
+distributions: linear smearing with the field solved on a grid [3], and
+exponential smearing with Ewald sums [4].
+
+References
+----------
+.. [1] P. B. Warren, A. Vlasov, L. Anton and A. J. Masters, "Screening
+   properties of Gaussian electrolyte models, with application to
+   dissipative particle dynamics", J. Chem. Phys. 138, 204907 (2013),
+   https://doi.org/10.1063/1.4807057
+.. [2] D. N. LeBard et al., "Self-assembly of coarse-grained ionic
+   surfactants accelerated by graphics processing units", Soft Matter 8,
+   2385 (2012), https://doi.org/10.1039/c1sm06787g
+.. [3] R. D. Groot, "Electrostatic interactions in dissipative particle
+   dynamics - simulation of polyelectrolytes and anionic surfactants",
+   J. Chem. Phys. 118, 11265 (2003), https://doi.org/10.1063/1.1574800
+.. [4] M. Gonzalez-Melchor, E. Mayoral, M. E. Velazquez and J. Alejandre,
+   "Electrostatic interactions in dissipative particle dynamics using the
+   Ewald sums", J. Chem. Phys. 125, 224107 (2006),
+   https://doi.org/10.1063/1.2400223
 """
 
 import math
