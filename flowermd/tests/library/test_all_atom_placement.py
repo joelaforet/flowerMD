@@ -4,8 +4,7 @@ import unyt as u
 
 from flowermd import Simulation
 from flowermd.internal.placement import (
-    junction_atoms,
-    repeat_units,
+    random_walk_conformation,
     serpentine_lattice_sites,
 )
 from flowermd.library import (
@@ -34,6 +33,44 @@ def _bond_lengths(compound, within_children_only=False):
     return np.sort(lengths)
 
 
+def _geometry(compound):
+    """Bond lengths, bond angles and tetrahedral signed volumes.
+
+    Returned in a fixed order so two conformations of the same molecule can
+    be compared entry by entry. The signed volume of an atom with four
+    neighbours is the determinant of its neighbour vectors; its sign is the
+    handedness of that center.
+    """
+    particles = list(compound.particles())
+    index = {p: i for i, p in enumerate(particles)}
+    xyz = np.asarray(compound.xyz, dtype=float)
+    neighbors = [[] for _ in particles]
+    for a, b in compound.bonds():
+        neighbors[index[a]].append(index[b])
+        neighbors[index[b]].append(index[a])
+    bonds = np.array(
+        [
+            np.linalg.norm(xyz[i] - xyz[j])
+            for i in range(len(xyz))
+            for j in sorted(neighbors[i])
+            if j > i
+        ]
+    )
+    angles, volumes = [], []
+    for center, around in enumerate(neighbors):
+        around = sorted(around)
+        vectors = xyz[around] - xyz[center]
+        for x in range(len(around)):
+            for y in range(x + 1, len(around)):
+                cosine = np.dot(vectors[x], vectors[y]) / (
+                    np.linalg.norm(vectors[x]) * np.linalg.norm(vectors[y])
+                )
+                angles.append(cosine)
+        if len(around) == 4:
+            volumes.append(np.linalg.det(vectors[:3] - vectors[3]))
+    return bonds, np.array(angles), np.array(volumes)
+
+
 class TestAllAtomPlacement(BaseTest):
     def test_lattice_sites_cover_count(self):
         sites, dims = serpentine_lattice_sites(30, np.array([3.0, 3.0, 3.0]))
@@ -47,10 +84,7 @@ class TestAllAtomPlacement(BaseTest):
 
     def test_random_walk_box_and_geometry(self):
         chains = PolyEthylene(lengths=6, num_mols=4)
-        intra_before = [
-            _bond_lengths(c, within_children_only=True)
-            for c in chains.molecules
-        ]
+        before = [_geometry(c) for c in chains.molecules]
         system = AllAtomRandomWalk(molecules=chains, density=DENSITY, seed=7)
         box = system.system.box
         expected = get_target_box_mass_density(
@@ -58,17 +92,27 @@ class TestAllAtomPlacement(BaseTest):
         ).to("nm")
         assert np.allclose(box.lengths, expected.value)
         assert system.system.n_particles == chains.n_particles
-        for chain, before in zip(system.system.children, intra_before):
-            assert np.allclose(
-                _bond_lengths(chain, within_children_only=True), before
-            )
-            repeats = repeat_units(chain)
-            junctions = junction_atoms(chain, repeats)
-            for inbound, outbound in junctions[1:-1]:
-                assert inbound is not None and outbound is not None
-            # junction bonds stretched or compressed, but not absurdly
-            allb = _bond_lengths(chain)
-            assert allb.max() < 0.6 and allb.min() > 0.05
+        for chain, (bonds, angles, volumes) in zip(
+            system.system.children, before
+        ):
+            new_bonds, new_angles, new_volumes = _geometry(chain)
+            # only torsions change: bonds, angles and handedness are kept
+            assert np.allclose(new_bonds, bonds, atol=1e-6)
+            assert np.allclose(new_angles, angles, atol=1e-6)
+            assert np.all(np.sign(new_volumes) == np.sign(volumes))
+            assert np.allclose(np.abs(new_volumes), np.abs(volumes))
+
+    def test_random_walk_changes_conformation(self):
+        chains = PolyEthylene(lengths=12, num_mols=1)
+        built = np.asarray(chains.molecules[0].xyz, dtype=float)
+        system = AllAtomRandomWalk(molecules=chains, density=DENSITY, seed=4)
+        placed = np.asarray(system.system.children[0].xyz, dtype=float)
+
+        def end_to_end(xyz):
+            return np.linalg.norm(xyz[-1] - xyz[0])
+
+        # the built chain is extended; random torsions coil it
+        assert end_to_end(placed) < end_to_end(built)
 
     def test_random_walk_is_seeded(self):
         a = AllAtomRandomWalk(
@@ -83,54 +127,30 @@ class TestAllAtomPlacement(BaseTest):
         assert np.allclose(a.system.xyz, b.system.xyz)
         assert not np.allclose(a.system.xyz, c.system.xyz)
 
-    def test_random_walk_max_turn(self):
-        with pytest.raises(ValueError):
-            AllAtomRandomWalk(
-                PolyEthylene(lengths=4, num_mols=1), DENSITY, max_turn=0
-            )
-        system = AllAtomRandomWalk(
-            PolyEthylene(lengths=8, num_mols=1), DENSITY, max_turn=np.pi / 6
+    def test_ring_junction_keeps_its_geometry(self):
+        # two units joined by two bonds, as in a ladder polymer: the
+        # junction is part of a ring and has no free torsion
+        xyz = np.array(
+            [[0.0, 0, 0], [0.15, 0, 0], [0.0, 0.15, 0], [0.15, 0.15, 0.05]]
         )
-        chain = system.system.children[0]
-        centers = np.array([r.xyz.mean(axis=0) for r in repeat_units(chain)])
-        steps = np.diff(centers, axis=0)
-        cosines = [
-            np.dot(steps[i], steps[i + 1])
-            / np.linalg.norm(steps[i])
-            / np.linalg.norm(steps[i + 1])
-            for i in range(len(steps) - 1)
-        ]
-        assert min(cosines) >= np.cos(np.pi / 6) - 1e-6
+        units = [[0, 1], [2, 3]]
+        bonds = np.array([[0, 1], [2, 3], [0, 2], [1, 3]])
+        placed = random_walk_conformation(
+            xyz, units, bonds, np.zeros(3), np.random.default_rng(0)
+        )
 
-    def test_lattice_repeat_units(self):
-        chains = PolyEthylene(lengths=5, num_mols=3)
-        intra_before = [
-            _bond_lengths(c, within_children_only=True)
-            for c in chains.molecules
-        ]
-        system = AllAtomLattice(molecules=chains, density=DENSITY, seed=3)
-        assert np.prod(system.grid_shape) >= 15
-        assert system.system.n_particles == chains.n_particles
-        for chain, before in zip(system.system.children, intra_before):
-            assert np.allclose(
-                _bond_lengths(chain, within_children_only=True), before
-            )
+        def distances(points):
+            return np.linalg.norm(points[:, None] - points[None], axis=-1)
+
+        assert np.allclose(distances(placed), distances(xyz))
 
     def test_lattice_whole_chains_keep_all_bonds(self):
         chains = PolyEthylene(lengths=5, num_mols=3)
         before = [_bond_lengths(c) for c in chains.molecules]
-        system = AllAtomLattice(
-            molecules=chains, density=DENSITY, unit="chain", seed=3
-        )
+        system = AllAtomLattice(molecules=chains, density=DENSITY, seed=3)
         assert np.prod(system.grid_shape) >= 3
         for chain, b in zip(system.system.children, before):
             assert np.allclose(_bond_lengths(chain), b)
-
-    def test_lattice_bad_unit(self):
-        with pytest.raises(ValueError):
-            AllAtomLattice(
-                PolyEthylene(lengths=2, num_mols=1), DENSITY, unit="atom"
-            )
 
     def test_polydisperse_and_unitless_density(self):
         chains = PolyEthylene(lengths=[3, 5], num_mols=[2, 2])
