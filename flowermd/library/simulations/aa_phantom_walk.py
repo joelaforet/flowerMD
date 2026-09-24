@@ -258,6 +258,16 @@ class AllAtomPhantomWalk(Simulation):
                 ),
                 "stereo_k": self.aa_forcefield.stereo_k,
                 "stereo_centers": self.aa_forcefield.stereo_centers,
+                "charges": self.aa_forcefield.charge_method,
+                "net_charge_e": self.aa_forcefield.net_charge,
+                "electrostatics": self.aa_forcefield.electrostatics,
+                "charge_smearing_a": self.aa_forcefield.charge_smearing,
+                "charge_scale": self.aa_forcefield.charge_scale,
+                "pppm_resolution": (
+                    list(self.aa_forcefield.pppm_resolution)
+                    if self.aa_forcefield.electrostatics
+                    else None
+                ),
                 "epsilon_ref_kcal_mol": self.aa_forcefield.parameters.epsilon_ref,
             }
             record["timings_s"].update(

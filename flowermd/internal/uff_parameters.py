@@ -23,6 +23,7 @@ from flowermd.internal.all_atom_parameters import (
     intern_type,
     merge_parameters,
     molecular_compounds,
+    molecule_graph_key,
     strip_keys,
 )
 
@@ -220,17 +221,7 @@ def parameterize_uff(compound):
     cache = {}
     chunks = []
     for molecule in molecules:
-        particles = list(molecule.particles())
-        local = {p: i for i, p in enumerate(particles)}
-        key = (
-            tuple(p.element.atomic_number for p in particles),
-            tuple(
-                sorted(
-                    tuple(sorted((local[a], local[b])))
-                    for a, b in molecule.bonds()
-                )
-            ),
-        )
+        key = molecule_graph_key(molecule)
         chunk = cache.get(key)
         if chunk is None:
             chunk = _parameterize_one(molecule, box_lengths_a)

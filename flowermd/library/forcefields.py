@@ -10,6 +10,16 @@ import numpy as np
 from flowermd.assets import FF_DIR
 from flowermd.base import BaseHOOMDForcefield, BaseXMLForcefield
 from flowermd.internal.all_atom_parameters import to_gsd_frame
+from flowermd.internal.charges import (
+    CHARGE_METHODS,
+    DEFAULT_NAGL_MODEL,
+    assign_partial_charges,
+)
+from flowermd.internal.electrostatics import (
+    SmearedCoulomb,
+    hoomd_charges,
+    mesh_resolution,
+)
 from flowermd.internal.stereochemistry import (
     append_stereochemistry_dihedrals,
     build_stereochemistry_force,
@@ -879,6 +889,28 @@ class AllAtomDPD(BaseHOOMDForcefield):
         Neighbor list buffer in Angstrom.
     exclusions : list, default ["bond", "angle", "dihedral"]
         Neighbor-list exclusions (1-2, 1-3 and 1-4 pairs).
+    charges : {None, "formal", "gasteiger", "nagl"} or array-like, default None
+        Partial charges in e. A string assigns them per distinct molecule
+        (see `flowermd.internal.charges`); an array gives one charge per
+        particle. None leaves every charge at zero. Charges alone add no
+        force; set `electrostatics` to use them.
+    electrostatics : {None, "smeared"}, default None
+        ``"smeared"`` adds Gaussian-smeared Coulomb interactions computed on
+        a PPPM mesh (see `flowermd.internal.electrostatics`). They are
+        bounded as atoms pass through each other, so they can be used with
+        the soft DPD core. Requires `charges` and a neutral system.
+    charge_smearing : float, default 2.0
+        Standard deviation of each Gaussian charge cloud in Angstrom. The
+        pair energy is ``332.06 q_i q_j erf(r / (2 sigma)) / r`` kcal/mol.
+    charge_scale : float, default 1.0
+        Multiplier applied to every charge in the electrostatic term.
+    pppm_order : int, default 5
+        PPPM charge assignment order.
+    pppm_resolution : tuple of int, optional
+        PPPM grid; by default the spacing is at most `charge_smearing`,
+        which reproduces the smeared forces to about 1 %.
+    nagl_model : str, default "openff-gnn-am1bcc-1.0.0.pt"
+        NAGL model used when ``charges="nagl"``.
 
     Attributes
     ----------
@@ -894,11 +926,17 @@ class AllAtomDPD(BaseHOOMDForcefield):
     openff_topology : openff.toolkit.Topology or None
         The OpenFF topology used for parameter assignment when
         ``bonded="openff"``, for building a charged Interchange downstream.
+        Its molecules carry `charges` when those were assigned.
     stereo_reference : flowermd.internal.stereochemistry.StereoReference or None
         The recorded stereocenters when `protect_stereochemistry` is True.
+    charges : numpy.ndarray
+        One partial charge per particle in e (zeros when `charges` is None).
+        The frame stores them in HOOMD units, scaled by `charge_scale`.
+    charge_method : str or None
+        ``"formal"``, ``"gasteiger"``, ``"nagl"``, ``"user"`` or None.
     timings : dict
-        Wall time in seconds for ``parameterization`` and ``setup`` (frame
-        and force construction).
+        Wall time in seconds for ``parameterization``, ``charges`` and
+        ``setup`` (frame and force construction).
 
     """
 
@@ -924,9 +962,24 @@ class AllAtomDPD(BaseHOOMDForcefield):
         nlist=hoomd.md.nlist.Cell,
         nlist_buffer=0.4,
         exclusions=["bond", "angle", "dihedral"],
+        charges=None,
+        electrostatics=None,
+        charge_smearing=2.0,
+        charge_scale=1.0,
+        pppm_order=5,
+        pppm_resolution=None,
+        nagl_model=DEFAULT_NAGL_MODEL,
     ):
         if bonded not in ("uff", "openff"):
             raise ValueError("bonded must be 'uff' or 'openff'.")
+        if electrostatics not in (None, "smeared"):
+            raise ValueError("electrostatics must be None or 'smeared'.")
+        if electrostatics and charges is None:
+            raise ValueError("electrostatics='smeared' needs charges.")
+        if isinstance(charges, str) and charges not in CHARGE_METHODS:
+            raise ValueError(f"charges must be one of {CHARGE_METHODS}.")
+        if charge_smearing <= 0:
+            raise ValueError("charge_smearing must be positive.")
         for name, value in (
             ("A", A),
             ("kT", kT),
@@ -961,6 +1014,12 @@ class AllAtomDPD(BaseHOOMDForcefield):
         self.nlist_buffer = nlist_buffer
         self.exclusions = list(exclusions)
         self.openff_topology = None
+        self.electrostatics = electrostatics
+        self.charge_smearing = charge_smearing
+        self.charge_scale = charge_scale
+        self.pppm_order = pppm_order
+        self.pppm_resolution = pppm_resolution
+        self.nagl_model = nagl_model
         started = time.perf_counter()
         if bonded == "uff":
             from flowermd.internal.uff_parameters import parameterize_uff
@@ -979,16 +1038,58 @@ class AllAtomDPD(BaseHOOMDForcefield):
                 compound, planar_tolerance=stereo_planar_tolerance
             )
         parameterized = time.perf_counter()
+        n_particles = self.parameters.n_particles
+        if charges is None:
+            self.charge_method = None
+            self.charges = np.zeros(n_particles)
+        elif isinstance(charges, str):
+            self.charge_method = charges
+            self.charges = assign_partial_charges(
+                compound, charges, nagl_model=nagl_model
+            )
+        else:
+            self.charge_method = "user"
+            self.charges = np.asarray(charges, dtype=float)
+            if self.charges.shape != (n_particles,):
+                raise ValueError(
+                    f"charges needs one value per particle ({n_particles})."
+                )
+        if electrostatics and abs(self.charges.sum()) > 1e-6:
+            raise ValueError(
+                f"The system carries a net charge of {self.charges.sum():.4f} "
+                "e. Add counterions; smeared electrostatics needs a neutral "
+                "system."
+            )
+        if self.openff_topology is not None and self.charge_method:
+            # Carry the charges to the topology used for a Sage hand-off.
+            from openff.units import unit as offunit
+
+            offset = 0
+            for molecule in self.openff_topology.molecules:
+                n = molecule.n_atoms
+                molecule.partial_charges = (
+                    self.charges[offset : offset + n]
+                    * offunit.elementary_charge
+                )
+                offset += n
+        charged = time.perf_counter()
         self.frame = to_gsd_frame(self.parameters)
+        self.frame.particles.charge = hoomd_charges(self.charges, charge_scale)
         if self.stereo_reference is not None and self.stereo_reference.centers:
             append_stereochemistry_dihedrals(self.frame, self.stereo_reference)
         self.forces_by_role = {}
         hoomd_forces = self._create_forcefield()
         self.timings = {
             "parameterization": parameterized - started,
-            "setup": time.perf_counter() - parameterized,
+            "charges": charged - parameterized,
+            "setup": time.perf_counter() - charged,
         }
         super(AllAtomDPD, self).__init__(hoomd_forces)
+
+    @property
+    def net_charge(self):
+        """Total charge of the system in e."""
+        return float(self.charges.sum())
 
     @property
     def stereo_centers(self):
@@ -1072,10 +1173,29 @@ class AllAtomDPD(BaseHOOMDForcefield):
             self.forces_by_role["stereochemistry"] = restraint
             forces.append(restraint)
 
+        if self.electrostatics == "smeared":
+            electrostatics = self._electrostatic_force()
+            self.forces_by_role["electrostatics"] = electrostatics
+            forces.append(electrostatics)
+
         pair = self._pair_force(conservative=self.conservative)
         self.forces_by_role["pair"] = pair
         forces.append(pair)
         return forces
+
+    def _electrostatic_force(self):
+        sigma = self.charge_smearing
+        if self.pppm_resolution is None:
+            self.pppm_resolution = mesh_resolution(
+                self.parameters.box_lengths_a, 1.0 / (2.0 * sigma)
+            )
+        nlist = self.nlist(buffer=self.nlist_buffer, exclusions=self.exclusions)
+        return SmearedCoulomb(
+            nlist=nlist,
+            resolution=tuple(int(n) for n in self.pppm_resolution),
+            order=self.pppm_order,
+            sigma=sigma,
+        )
 
     def _pair_force(self, conservative):
         p = self.parameters
