@@ -9,11 +9,8 @@ from scipy.spatial.distance import pdist
 
 from flowermd.base.system import System
 from flowermd.internal.placement import (
-    junction_atoms,
-    place_along_path,
     random_rotation,
-    random_walk_path,
-    repeat_step_length,
+    random_walk_conformation,
     repeat_units,
     serpentine_lattice_sites,
     target_box_lengths,
@@ -88,18 +85,19 @@ def _as_density(density):
 
 
 class AllAtomRandomWalk(System):
-    """Place all-atom chains along random walks of their repeat units.
+    """Place all-atom chains as random coils that keep their stereochemistry.
 
     The box is sized for the target density, so the chains overlap heavily;
     this is the starting point the all-atom PhantomWalk DPD stage is designed
-    to relax. Each repeat unit (a child of the chain built by
-    `flowermd.base.Polymer`) is moved as a rigid body onto a node of a random
-    walk and rotated so its backbone axis follows the walk, with an extra
-    golden-angle twist per repeat. Geometry inside a repeat is untouched;
-    bonds between repeats start near their built length because the step is
-    the built centroid-to-centroid distance. There is no self-avoidance,
-    within or between chains.
-
+    to relax. Each chain starts from its built geometry, is given a uniformly
+    random orientation and a random position in the box, and then every bond
+    between two repeat units (the children of the chain built by
+    `flowermd.base.Polymer`) is turned to a uniformly random torsion. Only
+    those torsions change: every bond length, bond angle and stereocenter of
+    the built chain is kept, including centers whose substituents span two
+    repeats (polystyrene, PMMA). A junction that is part of a ring, such as
+    the two-bond junction of a ladder polymer, keeps its built geometry.
+    There is no self-avoidance, within or between chains.
 
     Parameters
     ----------
@@ -107,10 +105,8 @@ class AllAtomRandomWalk(System):
         Chains to place.
     density : float or unyt.unyt_quantity, required
         Target mass density (g/cm**3 assumed if unitless) or number density.
-    max_turn : float, default 2*pi/3
-        Largest angle (radians) between consecutive walk steps.
     seed : int, default 1234
-        Seed for the walk and the chain start positions.
+        Seed for the orientations, start positions and torsions.
     base_units : dict, default {}
 
     Attributes
@@ -120,18 +116,8 @@ class AllAtomRandomWalk(System):
 
     """
 
-    def __init__(
-        self,
-        molecules,
-        density,
-        max_turn=2.0 * np.pi / 3.0,
-        seed=1234,
-        base_units=dict(),
-    ):
-        if not 0 < max_turn <= np.pi:
-            raise ValueError("max_turn must be in (0, pi].")
+    def __init__(self, molecules, density, seed=1234, base_units=dict()):
         self.density = _as_density(density)
-        self.max_turn = max_turn
         self.seed = seed
         super(AllAtomRandomWalk, self).__init__(
             molecules=molecules, base_units=base_units
@@ -143,14 +129,17 @@ class AllAtomRandomWalk(System):
         )
         rng = np.random.default_rng(self.seed)
         for chain in self.all_molecules:
-            repeats = repeat_units(chain)
-            junctions = junction_atoms(chain, repeats)
-            step = repeat_step_length(chain, repeats, junctions)
+            particles = list(chain.particles())
+            index = {p: i for i, p in enumerate(particles)}
+            units = [
+                [index[p] for p in repeat.particles()]
+                for repeat in repeat_units(chain)
+            ]
+            bonds = [(index[a], index[b]) for a, b in chain.bonds()]
             start = rng.uniform(0.0, self.target_box)
-            path = random_walk_path(
-                len(repeats), step, start, rng, self.max_turn
+            chain.xyz = random_walk_conformation(
+                chain.xyz, units, bonds, start, rng
             )
-            place_along_path(repeats, junctions, path)
         compound = mb.Compound()
         compound.add(self.all_molecules)
         compound.box = mb.Box(lengths=self.target_box)
@@ -158,15 +147,13 @@ class AllAtomRandomWalk(System):
 
 
 class AllAtomLattice(System):
-    """Place all-atom chains on a serpentine lattice of repeat units.
+    """Place whole all-atom chains on a lattice.
 
     The box is sized for the target density and divided into a near-cubic
-    grid with one site per repeat unit (or per chain). Units are visited
-    along a serpentine path so consecutive repeats of a chain sit on adjacent
-    sites, each unit gets a random rotation about its center, and the whole
-    lattice gets one random shift. Geometry inside a unit is untouched; bonds
-    between repeats are left stretched for the DPD stage. Compared with the
-    random walk this gives far fewer close contacts at the same density.
+    grid with one site per chain. Each chain keeps its built conformation,
+    is centered on its site with a uniformly random rotation, and the whole
+    lattice gets one random shift. Chains move as rigid bodies, so every
+    bond, angle, torsion and stereocenter of the built chain is kept.
 
     Parameters
     ----------
@@ -174,10 +161,6 @@ class AllAtomLattice(System):
         Chains to place.
     density : float or unyt.unyt_quantity, required
         Target mass density (g/cm**3 assumed if unitless) or number density.
-    unit : {"repeat", "chain"}, default "repeat"
-        Rigid unit placed on each site. ``"chain"`` keeps every bond of the
-        as-built chain, including the junctions, at the cost of far fewer,
-        larger units.
     seed : int, default 1234
         Seed for the rotations and the global shift.
     base_units : dict, default {}
@@ -191,13 +174,8 @@ class AllAtomLattice(System):
 
     """
 
-    def __init__(
-        self, molecules, density, unit="repeat", seed=1234, base_units=dict()
-    ):
-        if unit not in ("repeat", "chain"):
-            raise ValueError("unit must be 'repeat' or 'chain'.")
+    def __init__(self, molecules, density, seed=1234, base_units=dict()):
         self.density = _as_density(density)
-        self.unit = unit
         self.seed = seed
         super(AllAtomLattice, self).__init__(
             molecules=molecules, base_units=base_units
@@ -207,12 +185,7 @@ class AllAtomLattice(System):
         self.target_box = target_box_lengths(
             self.density, self.mass, self.n_particles
         )
-        if self.unit == "chain":
-            units = list(self.all_molecules)
-        else:
-            units = [
-                r for chain in self.all_molecules for r in repeat_units(chain)
-            ]
+        units = list(self.all_molecules)
         sites, self.grid_shape = serpentine_lattice_sites(
             len(units), self.target_box
         )
