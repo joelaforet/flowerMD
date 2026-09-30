@@ -51,11 +51,13 @@ class PhantomWalk(Simulation):
         )
 
 
-def _check_chunks(n_steps, chunk, min_steps):
+def _check_chunks(n_steps, chunk, min_steps, samples_per_chunk=1):
     if chunk < 1:
         raise ValueError("chunk must be at least 1.")
     if min_steps > n_steps:
         raise ValueError("min_steps cannot exceed n_steps.")
+    if samples_per_chunk < 1 or chunk % samples_per_chunk:
+        raise ValueError("chunk must be a multiple of samples_per_chunk.")
 
 
 def run_until(
@@ -64,6 +66,7 @@ def run_until(
     stop,
     chunk=500,
     min_steps=0,
+    samples_per_chunk=1,
     write_at_start=True,
 ):
     """Advance `sim` with its current integrator until ``stop(sim)`` is True.
@@ -86,6 +89,11 @@ def run_until(
         Number of steps between evaluations of `stop`.
     min_steps : int, default 0
         Steps to run before the first chunk.
+    samples_per_chunk : int, default 1
+        When greater than 1 and `stop` has a ``sample(sim)`` method, each
+        chunk is run in this many equal sub-runs and ``stop.sample(sim)`` is
+        called after each one before ``stop(sim)`` decides, so the criterion
+        can average over the chunk. `chunk` must be divisible by it.
     write_at_start : bool, default True
         When True, triggers writers that evaluate to True for the initial
         step before the first simulation step.
@@ -96,7 +104,13 @@ def run_until(
         ``{"steps": int, "stopped_by_criterion": bool}``.
 
     """
-    _check_chunks(n_steps, chunk, min_steps)
+    _check_chunks(n_steps, chunk, min_steps, samples_per_chunk)
+    sampler = getattr(stop, "sample", None) if samples_per_chunk > 1 else None
+    if samples_per_chunk > 1 and sampler is None:
+        warnings.warn(
+            "samples_per_chunk > 1 but stop has no sample() method; "
+            "evaluating once per chunk."
+        )
     steps_run = 0
     if min_steps > 0:
         sim.run(steps=min_steps, write_at_start=write_at_start)
@@ -104,7 +118,15 @@ def run_until(
         write_at_start = False
     while steps_run < n_steps:
         this_chunk = min(chunk, n_steps - steps_run)
-        sim.run(steps=this_chunk, write_at_start=write_at_start)
+        if sampler is not None and this_chunk == chunk:
+            piece = chunk // samples_per_chunk
+            for _ in range(samples_per_chunk - 1):
+                sim.run(steps=piece, write_at_start=write_at_start)
+                write_at_start = False
+                sampler(sim)
+            sim.run(steps=piece, write_at_start=write_at_start)
+        else:
+            sim.run(steps=this_chunk, write_at_start=write_at_start)
         write_at_start = False
         steps_run += this_chunk
         if stop(sim):
@@ -118,6 +140,7 @@ def run_DPD(
     stop=None,
     chunk=500,
     min_steps=0,
+    samples_per_chunk=1,
     write_at_start=True,
 ):
     """Run DPD, NVE dynamics thermostatted by the DPD pair force.
@@ -133,7 +156,7 @@ def run_DPD(
     sim : flowermd.base.Simulation, required
     n_steps : int, required
         Maximum total number of steps.
-    stop, chunk, min_steps, write_at_start
+    stop, chunk, min_steps, samples_per_chunk, write_at_start
         As in `run_until`.
 
     Returns
@@ -142,7 +165,7 @@ def run_DPD(
         ``{"steps": int, "stopped_by_criterion": bool}``.
 
     """
-    _check_chunks(n_steps, chunk, min_steps)
+    _check_chunks(n_steps, chunk, min_steps, samples_per_chunk)
     dpd_types = (hoomd.md.pair.DPD, hoomd.md.pair.DPDLJ)
     if not any(isinstance(f, dpd_types) for f in sim._forcefield):
         warnings.warn(
@@ -168,6 +191,7 @@ def run_DPD(
             stop,
             chunk=chunk,
             min_steps=min_steps,
+            samples_per_chunk=samples_per_chunk,
             write_at_start=write_at_start,
         )
     finally:
