@@ -16,3 +16,10 @@ Base Types
 
 .. automodule:: flowermd.utils.base_types
    :members:
+
+
+DPD Utilities
+-------------
+
+.. automodule:: flowermd.utils.dpd_utils
+   :members:
