@@ -13,6 +13,7 @@ from flowermd.library import (
     AllAtomRandomWalk,
     PolyEthylene,
 )
+from flowermd.library.simulations.phantom_walk import run_DPD
 from flowermd.tests import BaseTest
 from flowermd.utils import get_target_box_mass_density
 
@@ -168,6 +169,6 @@ class TestAllAtomPlacement(BaseTest):
         sim = Simulation(
             initial_state=ff.frame, forcefield=ff.hoomd_forces, dt=0.001
         )
-        result = sim.run_DPD(n_steps=40, chunk=20, stop=lambda s: False)
+        result = run_DPD(sim, n_steps=40, chunk=20, stop=lambda s: False)
         assert result["steps"] == 40
         assert all(np.isfinite(f.energy) for f in sim.forces)
