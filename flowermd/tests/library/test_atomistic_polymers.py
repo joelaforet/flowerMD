@@ -22,6 +22,7 @@ from flowermd.library import (
     Polycarbonate,
     PolyStyrene,
 )
+from flowermd.library.simulations.phantom_walk import run_DPD
 from flowermd.tests import BaseTest
 
 pytest.importorskip("rdkit")
@@ -203,5 +204,5 @@ class TestPIM1(BaseTest):
         sim = Simulation(
             initial_state=ff.frame, forcefield=ff.hoomd_forces, dt=0.001
         )
-        sim.run_DPD(n_steps=20)
+        run_DPD(sim, n_steps=20)
         assert all(np.isfinite(f.energy) for f in sim.forces)
