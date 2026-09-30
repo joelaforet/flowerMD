@@ -16,6 +16,7 @@ from flowermd.internal.stereochemistry import (
     audit_stereochemistry,
 )
 from flowermd.library.forcefields import AllAtomDPD
+from flowermd.library.simulations.phantom_walk import run_DPD
 from flowermd.utils import EnergyStationarity, HOOMDThermostats
 
 
@@ -265,7 +266,8 @@ class AllAtomPhantomWalk(Simulation):
             stereo["initial"] = self.audit_stereochemistry()
 
         started = time.perf_counter()
-        dpd = self.run_DPD(
+        dpd = run_DPD(
+            self,
             n_steps=dpd_max_steps,
             stop=criterion,
             chunk=dpd_chunk,
@@ -335,7 +337,7 @@ class AllAtomPhantomWalk(Simulation):
     def _run_fire_with(self, forces, n_steps, dt, fire_kwargs):
         """Run FIRE, temporarily swapping in `forces` when given."""
         if forces is None:
-            return self.run_FIRE(n_steps=n_steps, dt=dt, **fire_kwargs)
+            return self._run_fire(n_steps, dt, fire_kwargs)
         dpd_forces = self._forcefield
         # The bonded force objects are shared; detach them from the MD
         # integrator before FIRE takes them, then restore afterwards.
@@ -343,10 +345,14 @@ class AllAtomPhantomWalk(Simulation):
         self.integrator = None
         self._forcefield = forces
         try:
-            result = self.run_FIRE(n_steps=n_steps, dt=dt, **fire_kwargs)
+            result = self._run_fire(n_steps, dt, fire_kwargs)
         finally:
             self._forcefield = dpd_forces
         return result
+
+    def _run_fire(self, n_steps, dt, fire_kwargs):
+        self.run_FIRE(n_steps=n_steps, dt=dt, **fire_kwargs)
+        return {"steps": n_steps, "converged": bool(self.integrator.converged)}
 
     def write_record(self, path):
         """Write ``self.record`` as JSON."""
