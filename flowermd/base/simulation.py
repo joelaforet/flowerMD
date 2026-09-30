@@ -608,6 +608,12 @@ class Simulation(hoomd.simulation.Simulation):
             A diction of parameter:value for the integrator method used.
 
         """
+        if isinstance(self.integrator, hoomd.md.minimize.FIRE):
+            # run_FIRE left a minimizer in place; MD needs an MD integrator.
+            # Detach the minimizer first, so its forces can move over.
+            self.operations.integrator = None
+            self.integrator.forces.clear()
+            self.integrator = None
         if not self.integrator:  # Integrator and method not yet created
             self.integrator = hoomd.md.Integrator(
                 dt=self.dt,
@@ -996,128 +1002,6 @@ class Simulation(hoomd.simulation.Simulation):
         self.run(steps=n_steps, write_at_start=write_at_start)
         self.operations.updaters.remove(std_out_logger_printer)
 
-    def run_FIRE(
-        self,
-        n_steps,
-        dt,
-        force_tol=1e-1,
-        angmom_tol=1000.0,
-        energy_tol=1e-1,
-        finc_dt=1.1,
-        fdec_dt=0.5,
-        alpha_start=0.1,
-        fdec_alpha=0.99,
-        min_steps_adapt=5,
-        min_steps_conv=10,
-        write_at_start=False,
-        until_converged=False,
-        max_steps=None,
-    ):
-        """Minimize the potential energy with the FIRE algorithm.
-
-        The current forces are handed to a `hoomd.md.minimize.FIRE`
-        integrator with a `ConstantVolume` method for the duration of the
-        run. The previous integrator (if any) is restored afterwards, so
-        `run_NVT`, `run_NVE`, etc. can follow a minimization. FIRE zeroes
-        particle velocities when it starts.
-
-        The signature extends the `run_FIRE` proposed in
-        cmelab/flowerMD#264 (same first six arguments); reconcile the two
-        when that PR merges.
-
-        Parameters
-        ----------
-        n_steps : int, required
-            Number of minimization steps to run per call (or per chunk when
-            `until_converged` is True).
-        dt : float, required
-            Maximum FIRE time step.
-        force_tol : float, default 1e-1
-            Force convergence tolerance (per particle).
-        angmom_tol : float, default 1000.0
-            Angular momentum convergence tolerance (per particle).
-        energy_tol : float, default 1e-1
-            Energy convergence tolerance.
-        finc_dt : float, default 1.1
-            Factor to increase dt by when the power is positive.
-        fdec_dt : float, default 0.5
-            Factor to decrease dt by when the power is negative.
-        alpha_start : float, default 0.1
-            Initial velocity mixing parameter.
-        fdec_alpha : float, default 0.99
-            Factor to decrease alpha by.
-        min_steps_adapt : int, default 5
-            Steps of positive power before dt and alpha adapt.
-        min_steps_conv : int, default 10
-            Steps of positive power before convergence is declared.
-        write_at_start : bool, default False
-            When True, triggers writers that evaluate to True for the
-            initial step before the first minimization step.
-        until_converged : bool, default False
-            When True, keep running chunks of `n_steps` until
-            `FIRE.converged` is True or `max_steps` is reached.
-        max_steps : int, optional
-            Upper bound on the total number of steps when
-            `until_converged` is True. Required in that case.
-
-        Returns
-        -------
-        dict
-            ``{"steps": int, "converged": bool}``; `steps` counts the FIRE
-            steps run by this call.
-
-        """
-        if until_converged and max_steps is None:
-            raise ValueError("max_steps is required when until_converged.")
-        if until_converged and max_steps < n_steps:
-            raise ValueError("max_steps must be at least n_steps.")
-        previous_integrator = self.integrator
-        fire = hoomd.md.minimize.FIRE(
-            dt=dt,
-            force_tol=force_tol,
-            angmom_tol=angmom_tol,
-            energy_tol=energy_tol,
-            finc_dt=finc_dt,
-            fdec_dt=fdec_dt,
-            alpha_start=alpha_start,
-            fdec_alpha=fdec_alpha,
-            min_steps_adapt=min_steps_adapt,
-            min_steps_conv=min_steps_conv,
-            integrate_rotational_dof=(True if self.constraint else False),
-        )
-        if self._rigid_constraint:
-            fire.rigid = self._rigid_constraint
-        if self._distance_constraint:
-            fire.constraints.append(self._distance_constraint)
-        fire.methods.append(
-            hoomd.md.methods.ConstantVolume(filter=self.integrate_group)
-        )
-        # Detach the forces from the MD integrator before FIRE takes them.
-        self.operations.integrator = None
-        fire.forces.extend(self._forcefield)
-        self.operations.integrator = fire
-        self.integrator = fire
-        steps_run = 0
-        try:
-            self.run(steps=n_steps, write_at_start=write_at_start)
-            steps_run += n_steps
-            while (
-                until_converged and not fire.converged and steps_run < max_steps
-            ):
-                chunk = min(n_steps, max_steps - steps_run)
-                self.run(steps=chunk, write_at_start=False)
-                steps_run += chunk
-            converged = bool(fire.converged)
-        finally:
-            # Hand the forces back to the previous MD integrator, if any.
-            self.operations.integrator = None
-            fire.forces.clear()
-            if previous_integrator is not None:
-                previous_integrator.forces = self._forcefield
-                self.operations.integrator = previous_integrator
-            self.integrator = previous_integrator
-        return {"steps": steps_run, "converged": converged}
-
     def run_DPD(
         self,
         n_steps,
@@ -1255,16 +1139,14 @@ class Simulation(hoomd.simulation.Simulation):
         ----------
         fire_kwargs: dict, required
             A dictionary of parameter:value for the fire minimizer function.
+            ``dt`` defaults to the simulation time step.
         integrator_method : hoomd.md.method, required
             Instance of one of the `hoomd.md.method` options.
         method_kwargs : dict, required
             A dictionary of parameter:value for the integrator method used.
 
         """
-        fire = hoomd.md.minimize.FIRE(
-            dt=self.dt,
-            **fire_kwargs,
-        )
+        fire = hoomd.md.minimize.FIRE(**{"dt": self.dt, **fire_kwargs})
         new_method = integrator_method(**method_kwargs)
         fire.methods.append(new_method)
         fire.forces.extend(self._forcefield)
@@ -1281,6 +1163,7 @@ class Simulation(hoomd.simulation.Simulation):
         angmom_tol=1000,
         energy_tol=1e-1,
         write_at_start=False,
+        **fire_kwargs,
     ):
         """
 
@@ -1293,6 +1176,10 @@ class Simulation(hoomd.simulation.Simulation):
             When set to True, triggers writers that evaluate to True
             for the initial step to execute before the next simulation
             time step.
+        **fire_kwargs
+            Further `hoomd.md.minimize.FIRE` parameters, such as ``dt``
+            (default: the simulation time step), ``finc_dt`` or
+            ``alpha_start``.
 
         """
         self.set_fire_minimizer(
@@ -1300,6 +1187,7 @@ class Simulation(hoomd.simulation.Simulation):
                 "force_tol": force_tol,
                 "angmom_tol": angmom_tol,
                 "energy_tol": energy_tol,
+                **fire_kwargs,
             },
             integrator_method=hoomd.md.methods.ConstantVolume,
             method_kwargs={"filter": self.integrate_group},

@@ -240,44 +240,25 @@ class TestSimulate(BaseTest):
         sim.run_NVE(n_steps=500)
         assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
 
-    def test_run_FIRE_lowers_energy_and_restores_integrator(
-        self, benzene_system
-    ):
+    def test_run_FIRE_passes_fire_parameters(self, benzene_system):
+        sim = Simulation.from_system(benzene_system)
+        sim.run_FIRE(n_steps=10, dt=1e-4, finc_dt=1.2, alpha_start=0.2)
+        assert np.isclose(sim.integrator.dt, 1e-4)
+        assert np.isclose(sim.integrator.finc_dt, 1.2)
+        assert np.isclose(sim.integrator.alpha_start, 0.2)
+
+    def test_MD_after_run_FIRE(self, benzene_system):
         sim = Simulation.from_system(benzene_system)
         sim.run_NVE(n_steps=10)
         energy_before = sum(f.energy for f in sim.forces)
-        result = sim.run_FIRE(n_steps=200, dt=1e-4, force_tol=1e-6)
-        assert result["steps"] == 200
-        assert isinstance(result["converged"], bool)
-        assert isinstance(sim.integrator, hoomd.md.Integrator)
-        assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
-        energy_after = sum(f.energy for f in sim.forces)
-        assert energy_after <= energy_before
-        # MD still works after the minimizer handed the forces back
+        sim.run_FIRE(n_steps=200, dt=1e-4, force_tol=1e-6)
+        assert sum(f.energy for f in sim.forces) <= energy_before
+        # the next MD run gets an MD integrator back, with every force
         sim.run_NVT(n_steps=10, kT=1.0, tau_kt=sim.dt * 100)
-        assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
+        assert type(sim.integrator) is hoomd.md.Integrator
+        assert sim.operations.integrator is sim.integrator
         assert sim.method.thermostat is not None
-
-    def test_run_FIRE_first_call_and_until_converged(self, benzene_system):
-        sim = Simulation.from_system(benzene_system)
-        result = sim.run_FIRE(
-            n_steps=50,
-            dt=1e-4,
-            force_tol=1e3,
-            energy_tol=1e3,
-            until_converged=True,
-            max_steps=500,
-        )
-        assert result["converged"] is True
-        assert 50 <= result["steps"] <= 500
-        assert sim.integrator is None
-        sim.run_NVE(n_steps=10)
-        assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
-
-    def test_run_FIRE_until_converged_requires_max_steps(self, benzene_system):
-        sim = Simulation.from_system(benzene_system)
-        with pytest.raises(ValueError):
-            sim.run_FIRE(n_steps=10, dt=1e-4, until_converged=True)
+        assert len(sim.integrator.forces) == len(sim._forcefield)
 
     def _dpd_simulation(self, benzene_cg_system):
         snapshot = benzene_cg_system.hoomd_snapshot
