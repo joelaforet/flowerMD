@@ -1,4 +1,4 @@
-"""Stopping criteria for chunked simulation runs (see `Simulation.run_DPD`)."""
+"""Stopping criteria for chunked simulation runs (see `run_DPD`)."""
 
 import numpy as np
 
@@ -54,7 +54,7 @@ class EnergyStationarity:
         ----------
         sim : flowermd.base.Simulation, required
             The running simulation. Its forces must be attached, which is
-            the case whenever this is called from `Simulation.run_DPD`.
+            the case whenever this is called from `run_DPD`.
 
         """
         forces = self.forces if self.forces is not None else sim.forces

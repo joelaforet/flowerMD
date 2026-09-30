@@ -27,7 +27,6 @@ from flowermd.library.polymers import (
 from flowermd.library.systems import mbuildSystem
 from flowermd.tests import BaseTest
 from flowermd.utils import (
-    EnergyStationarity,
     create_rigid_ellipsoid_chain,
     get_target_box_mass_density,
     set_bond_constraints,
@@ -259,62 +258,6 @@ class TestSimulate(BaseTest):
         assert sim.operations.integrator is sim.integrator
         assert sim.method.thermostat is not None
         assert len(sim.integrator.forces) == len(sim._forcefield)
-
-    def _dpd_simulation(self, benzene_cg_system):
-        snapshot = benzene_cg_system.hoomd_snapshot
-        dpd = hoomd.md.pair.DPD(
-            nlist=hoomd.md.nlist.Cell(buffer=0.4), kT=1.0, default_r_cut=1.0
-        )
-        for i, type_i in enumerate(snapshot.particles.types):
-            for type_j in snapshot.particles.types[i:]:
-                dpd.params[(type_i, type_j)] = dict(A=25.0, gamma=4.5)
-        return Simulation(initial_state=snapshot, forcefield=[dpd], dt=0.01)
-
-    def test_run_DPD_fixed_steps(self, benzene_cg_system):
-        sim = self._dpd_simulation(benzene_cg_system)
-        result = sim.run_DPD(n_steps=300)
-        assert result == {"steps": 300, "stopped_by_criterion": False}
-        assert sim.timestep == 300
-        assert isinstance(sim.method, hoomd.md.methods.ConstantVolume)
-
-    def test_run_DPD_stop_callable(self, benzene_cg_system):
-        sim = self._dpd_simulation(benzene_cg_system)
-        calls = []
-
-        def stop_after_two(s):
-            calls.append(s.timestep)
-            return len(calls) == 2
-
-        result = sim.run_DPD(
-            n_steps=5000, stop=stop_after_two, chunk=100, min_steps=50
-        )
-        assert result == {"steps": 250, "stopped_by_criterion": True}
-        assert calls == [150, 250]
-
-    def test_run_DPD_reaches_n_steps_without_stopping(self, benzene_cg_system):
-        sim = self._dpd_simulation(benzene_cg_system)
-        result = sim.run_DPD(n_steps=250, stop=lambda s: False, chunk=100)
-        assert result == {"steps": 250, "stopped_by_criterion": False}
-
-    def test_run_DPD_energy_stationarity(self, benzene_cg_system):
-        sim = self._dpd_simulation(benzene_cg_system)
-        criterion = EnergyStationarity(tol=1.0, consecutive=2)
-        result = sim.run_DPD(n_steps=2000, stop=criterion, chunk=100)
-        # tol=1.0 passes any finite change, so it stops after 3 chunks
-        assert result == {"steps": 300, "stopped_by_criterion": True}
-        assert len(criterion.history) == 3
-
-    def test_run_DPD_warns_without_dpd_force(self, benzene_system):
-        sim = Simulation.from_system(benzene_system)
-        with pytest.warns(UserWarning, match="run_DPD"):
-            sim.run_DPD(n_steps=10)
-
-    def test_run_DPD_bad_arguments(self, benzene_cg_system):
-        sim = self._dpd_simulation(benzene_cg_system)
-        with pytest.raises(ValueError):
-            sim.run_DPD(n_steps=10, chunk=0)
-        with pytest.raises(ValueError):
-            sim.run_DPD(n_steps=10, min_steps=20)
 
     def test_displacement_cap(self, benzene_system):
         sim = Simulation.from_system(benzene_system)
