@@ -18,8 +18,8 @@ Base Types
    :members:
 
 
-Stopping Criteria
------------------
+DPD Utilities
+-------------
 
-.. automodule:: flowermd.utils.stopping
+.. automodule:: flowermd.utils.dpd_utils
    :members:
