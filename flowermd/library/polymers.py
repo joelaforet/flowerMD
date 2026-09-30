@@ -1,13 +1,19 @@
 """Polymer and CoPolymer example classes."""
 
 import os
+import random
 
 import mbuild as mb
 import numpy as np
 from mbuild.coordinate_transform import z_axis_transform
 
-from flowermd import CoPolymer, Polymer
+from flowermd import CoPolymer, Molecule, Polymer
 from flowermd.assets import MON_DIR
+from flowermd.internal import check_return_iterable
+from flowermd.internal.monomers import (
+    ladder_monomer_from_marked_smiles,
+    monomer_from_marked_smiles,
+)
 
 
 class PolyEthylene(Polymer):
@@ -523,3 +529,403 @@ class EllipsoidChainRand(Polymer):
                 if d[i] > pos_range[i]:
                     d[i] -= pos_range[i]
         return d
+
+
+class MarkedSmilesPolymer(Polymer):
+    """A polymer whose repeat unit is a SMILES with marked attachment points.
+
+    Subclasses set ``smiles`` (with ``[*:1]`` at the head and ``[*:2]`` at
+    the tail), ``bond_length`` (nm) and, for reference, ``reference_density``
+    in g/cm**3. The repeat unit is embedded with RDKit so chirality tags are
+    honoured, and the two attachment hydrogens become the bonding sites. See
+    `flowermd.internal.monomers.monomer_from_marked_smiles`.
+
+    Parameters
+    ----------
+    lengths : int or list, required
+        Repeat units per chain.
+    num_mols : int or list, required
+        Chains per length.
+    seed : int, default 0
+        RDKit embedding seed for the repeat unit.
+    name : str, optional
+        Compound name; defaults to the class attribute ``default_name``.
+
+    """
+
+    smiles = None
+    bond_length = 0.154
+    reference_density = None
+    default_name = "polymer"
+
+    def __init__(self, lengths, num_mols, seed=0, name=None, **kwargs):
+        if self.smiles is None:
+            raise NotImplementedError("Subclasses must define `smiles`.")
+        monomer, bond_indices = monomer_from_marked_smiles(
+            self.smiles, seed=seed, name=name or self.default_name
+        )
+        self.marked_smiles = self.smiles
+        super(MarkedSmilesPolymer, self).__init__(
+            lengths=lengths,
+            num_mols=num_mols,
+            compound=monomer,
+            bond_indices=bond_indices,
+            bond_length=self.bond_length,
+            bond_orientation=[None, None],
+            name=name or self.default_name,
+            **kwargs,
+        )
+
+
+class PET(MarkedSmilesPolymer):
+    """Poly(ethylene terephthalate). Amorphous density about 1.33 g/cm**3."""
+
+    smiles = "O=C(OCCO[*:2])c1ccc(C(=O)[*:1])cc1"
+    bond_length = 0.134
+    reference_density = 1.33
+    default_name = "pet"
+
+
+class Polycarbonate(MarkedSmilesPolymer):
+    """Bisphenol-A polycarbonate. Amorphous density about 1.20 g/cm**3."""
+
+    smiles = "CC(C)(c1ccc(OC(=O)O[*:2])cc1)c1ccc([*:1])cc1"
+    bond_length = 0.136
+    reference_density = 1.20
+    default_name = "pc"
+
+
+class PEI(MarkedSmilesPolymer):
+    """Polyetherimide (Ultem type). Amorphous density about 1.27 g/cm**3."""
+
+    smiles = (
+        "CC(C)(c1ccc(Oc2ccc3c(c2)C(=O)N(c2cccc([*:2])c2)C3=O)cc1)"
+        "c1ccc(Oc2ccc3c(c2)C(=O)N([*:1])C3=O)cc1"
+    )
+    bond_length = 0.140
+    reference_density = 1.27
+    default_name = "pei"
+
+
+class P3HT(MarkedSmilesPolymer):
+    """Poly(3-hexylthiophene), head-to-tail. Density about 1.09 g/cm**3."""
+
+    smiles = "[*:1]c1sc([*:2])c(CCCCCC)c1"
+    bond_length = 0.145
+    reference_density = 1.094
+    default_name = "p3ht"
+
+
+class PES(MarkedSmilesPolymer):
+    """Poly(ether sulfone), [-O-C6H4-SO2-C6H4-]n. Density about 1.37 g/cm**3."""
+
+    smiles = "O=S(=O)(c1ccc(O[*:1])cc1)c1ccc([*:2])cc1"
+    bond_length = 0.138
+    reference_density = 1.37
+    default_name = "pes"
+
+
+class _PolystyreneR(MarkedSmilesPolymer):
+    smiles = "c1ccc([C@H](C[*:2])[*:1])cc1"
+    default_name = "ps"
+
+
+class _PolystyreneS(MarkedSmilesPolymer):
+    smiles = "c1ccc([C@@H](C[*:2])[*:1])cc1"
+    default_name = "ps"
+
+
+class _PMMAR(MarkedSmilesPolymer):
+    smiles = "COC(=O)[C@](C)(C[*:1])[*:2]"
+    default_name = "pmma"
+
+
+class _PMMAS(MarkedSmilesPolymer):
+    smiles = "COC(=O)[C@@](C)(C[*:1])[*:2]"
+    default_name = "pmma"
+
+
+TACTICITY_SEQUENCES = {"isotactic": "A", "syndiotactic": "AB", "atactic": None}
+
+
+class _TacticCoPolymer(CoPolymer):
+    """Two enantiomeric repeat units combined into a chain of set tacticity."""
+
+    monomer_R = None
+    monomer_S = None
+    reference_density = None
+    default_name = "polymer"
+
+    def _build(self, length, sequence):
+        # mBuild's recipe wants exactly the monomers that appear in the
+        # sequence, so an isotactic ("A") or a short random sequence that
+        # happens to use one hand must add only that monomer.
+        chain = mb.lib.recipes.Polymer()
+        for label, monomer in (
+            ("A", self.monomer_A),
+            ("B", self.monomer_B),
+        ):
+            if label in sequence:
+                chain.add_monomer(
+                    monomer.monomer,
+                    indices=monomer.bond_indices,
+                    orientation=monomer.bond_orientation,
+                    separation=monomer.bond_length,
+                )
+        chain.build(n=length, sequence=sequence)
+        return chain
+
+    def _generate(self):
+        # `lengths` counts repeat units. Build each chain from an explicit
+        # sequence of that many letters, so a syndiotactic chain is not
+        # `length` copies of "AB".
+        rng = random.Random(self.seed)
+        for idx, length in enumerate(self.lengths):
+            for _ in range(self.n_mols[idx]):
+                if self.tacticity == "atactic":
+                    sequence = "".join(rng.choice("AB") for _ in range(length))
+                elif self.tacticity == "isotactic":
+                    sequence = "A" * length
+                else:
+                    sequence = ("AB" * length)[:length]
+                self._A_count += sequence.count("A")
+                self._B_count += sequence.count("B")
+                mol = self._build(length=1, sequence=sequence)
+                mol.name = f"{self.name}_{length}mer_{sequence}"
+                self._molecules.append(mol)
+
+    def __init__(
+        self,
+        lengths,
+        num_mols,
+        tacticity="atactic",
+        seed=24,
+        name=None,
+        **kwargs,
+    ):
+        if tacticity not in TACTICITY_SEQUENCES:
+            raise ValueError(
+                f"tacticity must be one of {sorted(TACTICITY_SEQUENCES)}."
+            )
+        self.tacticity = tacticity
+        super(_TacticCoPolymer, self).__init__(
+            monomer_A=self.monomer_R,
+            monomer_B=self.monomer_S,
+            lengths=lengths,
+            num_mols=num_mols,
+            name=name or self.default_name,
+            sequence=TACTICITY_SEQUENCES[tacticity],
+            AB_ratio=0.5,
+            seed=seed,
+            **kwargs,
+        )
+
+
+class PolyStyrene(_TacticCoPolymer):
+    """Polystyrene with chosen tacticity. Amorphous density about 1.04 g/cm**3.
+
+    The two enantiomeric repeat units are ``c1ccc([C@H](C[*:2])[*:1])cc1``
+    and its mirror image; ``tacticity`` selects the sequence: ``"atactic"``
+    (random, seeded), ``"isotactic"`` (all one hand) or ``"syndiotactic"``
+    (alternating). Each backbone CH is a stereocenter that the all-atom
+    DPD stereochemistry guard records and protects.
+
+    Parameters
+    ----------
+    lengths : int or list, required
+    num_mols : int or list, required
+    tacticity : {"atactic", "isotactic", "syndiotactic"}, default "atactic"
+    seed : int, default 24
+        Seed for the random atactic sequence.
+    name : str, default "ps"
+
+    """
+
+    monomer_R = _PolystyreneR
+    monomer_S = _PolystyreneS
+    reference_density = 1.04
+    default_name = "ps"
+
+
+class PMMA(_TacticCoPolymer):
+    """Poly(methyl methacrylate) with chosen tacticity. Density about 1.18 g/cm**3.
+
+    Repeat units ``COC(=O)[C@](C)(C[*:1])[*:2]`` and its mirror image; see
+    `PolyStyrene` for the tacticity options. The quaternary backbone carbon
+    is the stereocenter.
+
+    Parameters
+    ----------
+    lengths : int or list, required
+    num_mols : int or list, required
+    tacticity : {"atactic", "isotactic", "syndiotactic"}, default "atactic"
+    seed : int, default 24
+    name : str, default "pmma"
+
+    """
+
+    monomer_R = _PMMAR
+    monomer_S = _PMMAS
+    reference_density = 1.18
+    default_name = "pmma"
+
+
+class LadderPolymer(Molecule):
+    """A polymer whose repeat units join through two bonds (a ladder polymer).
+
+    mBuild's `Polymer` recipe joins repeats through one bond, so ladder
+    polymers such as PIM-1 are assembled here directly: the repeat unit is
+    embedded once from a SMILES with four marked attachment points, cloned
+    per repeat, and each clone is placed by a rigid fit that puts its two
+    inbound attachment atoms where the previous repeat's outbound
+    placeholders sit (and the reverse), which gives both junction bonds
+    near their built length. Chain ends are capped with hydrogens. This is
+    a purpose-built assembler for the PhantomWalk study; see the class
+    docstring of `PIM1`.
+
+    Subclasses set ``smiles`` with ``[*:1]``/``[*:2]`` on the outbound atoms
+    and ``[*:3]``/``[*:4]`` on the inbound atoms (1 pairs with 3, 2 with 4).
+
+    Parameters
+    ----------
+    lengths : int or list, required
+        Repeat units per chain.
+    num_mols : int or list, required
+        Chains per length.
+    seed : int, default 0
+        RDKit embedding seed for the repeat unit.
+    name : str, optional
+
+    The class attribute ``junction_length`` (nm) is the target for the two
+    junction bonds. Because the two attachment sites on each side are a
+    rigid pair, the four-point fit is a compromise and the junction bonds
+    come out shorter than the target (about 0.09 nm for PIM-1); the DPD
+    stage, with bonded terms scaled by 30, pulls them to the force-field
+    length within the first steps, like the stretched repeat junctions of
+    the lattice placement.
+
+    """
+
+    smiles = None
+    reference_density = None
+    default_name = "ladder"
+    junction_length = 0.136  # nm, aromatic C-O for PIM-1's dioxane links
+
+    def __init__(self, lengths, num_mols, seed=0, name=None, **kwargs):
+        if self.smiles is None:
+            raise NotImplementedError("Subclasses must define `smiles`.")
+        self.lengths = check_return_iterable(lengths)
+        num_mols = check_return_iterable(num_mols)
+        if len(num_mols) != len(self.lengths):
+            raise ValueError("Number of molecules and lengths must be equal.")
+        self.seed = seed
+        self._repeat, self._ports = ladder_monomer_from_marked_smiles(
+            self.smiles, seed=seed, name=name or self.default_name
+        )
+        super(LadderPolymer, self).__init__(
+            num_mols=num_mols, name=name or self.default_name, **kwargs
+        )
+
+    def _load(self):
+        return None
+
+    def _build(self, length):
+        template = self._repeat
+        t_parts = list(template.particles())
+        t_xyz = np.asarray(template.xyz, dtype=float)
+        out_ports = [self._ports[1], self._ports[2]]
+        in_ports = [self._ports[3], self._ports[4]]
+        anchor = {
+            k: t_parts.index(next(iter(t_parts[k].direct_bonds())))
+            for k in out_ports + in_ports
+        }
+        chain = mb.Compound(name=f"{self.name}_{length}mer")
+        repeats = []
+        for k in range(length):
+            repeat = mb.clone(template)
+            repeat.name = self.name
+            xyz = t_xyz.copy()
+            if k:
+                previous = np.asarray(repeats[-1].xyz, dtype=float)
+                # Fit this repeat's (inbound anchor, inbound placeholder) pairs
+                # onto the previous repeat's (outbound placeholder, outbound
+                # anchor) pairs: the anchors land where the placeholders were.
+                # Placeholders sit at a C-H length; extend them to the
+                # junction bond length before fitting so the new bonds
+                # come out at that length.
+                L = self.junction_length
+
+                def extend(points, anchor_i, port_i):
+                    d = points[port_i] - points[anchor_i]
+                    return points[anchor_i] + d / np.linalg.norm(d) * L
+
+                source = np.array(
+                    [
+                        xyz[anchor[in_ports[0]]],
+                        extend(xyz, anchor[in_ports[0]], in_ports[0]),
+                        xyz[anchor[in_ports[1]]],
+                        extend(xyz, anchor[in_ports[1]], in_ports[1]),
+                    ]
+                )
+                target = np.array(
+                    [
+                        extend(previous, anchor[out_ports[0]], out_ports[0]),
+                        previous[anchor[out_ports[0]]],
+                        extend(previous, anchor[out_ports[1]], out_ports[1]),
+                        previous[anchor[out_ports[1]]],
+                    ]
+                )
+                rotation, translation = _kabsch(source, target)
+                xyz = xyz @ rotation.T + translation
+            repeat.xyz = xyz
+            chain.add(repeat)
+            repeats.append(repeat)
+        # junction bonds, then remove the placeholders they replace
+        to_remove = []
+        for k in range(length - 1):
+            a_parts = list(repeats[k].particles())
+            b_parts = list(repeats[k + 1].particles())
+            for out_port, in_port in zip(out_ports, in_ports):
+                chain.add_bond(
+                    (a_parts[anchor[out_port]], b_parts[anchor[in_port]])
+                )
+                to_remove += [a_parts[out_port], b_parts[in_port]]
+        chain.remove(to_remove)
+        return chain
+
+    def _generate(self):
+        for idx, length in enumerate(self.lengths):
+            for _ in range(self.n_mols[idx]):
+                self._molecules.append(self._build(length))
+
+
+def _kabsch(source, target):
+    """Proper rigid transform (R, t) minimizing |R source + t - target|."""
+    s_center = source.mean(axis=0)
+    t_center = target.mean(axis=0)
+    h = (source - s_center).T @ (target - t_center)
+    u, _, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(vt.T @ u.T))
+    rotation = vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+    return rotation, t_center - s_center @ rotation.T
+
+
+class PIM1(LadderPolymer):
+    """PIM-1, the archetypal polymer of intrinsic microporosity. Bulk density about 1.06 g/cm**3.
+
+    A ladder polymer: each spirobisindane-dioxane repeat joins the next
+    through two C-O bonds, so it cannot be built with the one-bond
+    `flowermd.base.Polymer` recipe and uses `LadderPolymer` instead. The
+    repeat SMILES is the Abbott, Hart and Colina 2013 structure with
+    ``[*:1]``/``[*:2]`` on the dinitrile-ring carbons and ``[*:3]``/``[*:4]``
+    on the catechol oxygens. Included for the PhantomWalk benchmark set;
+    the assembler is intentionally specific to two-bond junctions.
+
+    """
+
+    smiles = (
+        "CC1(C)CC2(CC(C)(C)c3cc(O[*:4])c(O[*:3])cc32)c2cc3c(cc21)"
+        "Oc1c(C#N)c([*:1])c([*:2])c(C#N)c1O3"
+    )
+    reference_density = 1.06
+    default_name = "pim1"
