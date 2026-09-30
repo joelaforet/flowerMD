@@ -770,6 +770,140 @@ class PMMA(_TacticCoPolymer):
     default_name = "pmma"
 
 
+class PEAAIonomer(Molecule):
+    """Precise polyethylene-acrylate ionomer chains in the carboxylate form.
+
+    Each chain is ``lengths`` copies of ``pattern``, a string of
+    three-carbon backbone blocks: ``"E"`` is ``-CH2-CH2-CH2-`` and ``"A"`` is
+    ``-CH2-CH(CH2COO-)-CH2-``. For example ``pattern="EEAEE"`` places one
+    carboxylate every 15 backbone carbons. Chain ends are capped with
+    hydrogens. Every acid block's CH is a stereocenter; ``tacticity``
+    chooses its handedness along the chain, and the all-atom DPD
+    stereochemistry guard protects it. Use `counterions` for the
+    neutralizing ions.
+
+    Parameters
+    ----------
+    lengths : int or list, required
+        Copies of ``pattern`` per chain.
+    num_mols : int or list, required
+        Chains per length.
+    pattern : str, default "EEAEE"
+        Block sequence of one pattern repeat, from ``"E"`` and ``"A"``.
+    tacticity : {"atactic", "isotactic"}, default "atactic"
+        ``"atactic"`` draws each acid block's handedness from a seeded
+        random sequence.
+    seed : int, default 24
+        Seed for the atactic sequence.
+    name : str, default "peaa"
+
+    """
+
+    ethylene_smiles = "[*:1]CCC[*:2]"
+    acid_smiles_R = "[*:1]C[C@H](CC(=O)[O-])C[*:2]"
+    acid_smiles_S = "[*:1]C[C@@H](CC(=O)[O-])C[*:2]"
+    bond_length = 0.154
+    default_name = "peaa"
+
+    def __init__(
+        self,
+        lengths,
+        num_mols,
+        pattern="EEAEE",
+        tacticity="atactic",
+        seed=24,
+        name=None,
+        **kwargs,
+    ):
+        if not pattern or set(pattern) - {"E", "A"}:
+            raise ValueError("pattern must be a string of 'E' and 'A'.")
+        if tacticity not in ("atactic", "isotactic"):
+            raise ValueError("tacticity must be 'atactic' or 'isotactic'.")
+        self.lengths = check_return_iterable(lengths)
+        num_mols = check_return_iterable(num_mols)
+        if len(num_mols) != len(self.lengths):
+            raise ValueError("Number of molecules and lengths must be equal.")
+        self.pattern = pattern
+        self.tacticity = tacticity
+        self.seed = seed
+        self.sequences = []
+        self._blocks = {
+            "E": monomer_from_marked_smiles(self.ethylene_smiles, name="E"),
+            "R": monomer_from_marked_smiles(self.acid_smiles_R, name="A"),
+            "S": monomer_from_marked_smiles(self.acid_smiles_S, name="A"),
+        }
+        super(PEAAIonomer, self).__init__(
+            num_mols=num_mols, name=name or self.default_name, **kwargs
+        )
+
+    @property
+    def n_carboxylates(self):
+        """Carboxylate groups over all chains."""
+        return sum(
+            sequence.count("R") + sequence.count("S")
+            for sequence in self.sequences
+        )
+
+    def counterions(self, smiles="[Na+]", name="counterion"):
+        """Return a `flowermd.base.Molecule` of neutralizing counterions.
+
+        Parameters
+        ----------
+        smiles : str, default "[Na+]"
+            SMILES of a monatomic cation such as ``"[Na+]"`` or ``"[Zn+2]"``.
+        name : str, default "counterion"
+
+        """
+        from rdkit import Chem
+
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None or mol.GetNumAtoms() != 1:
+            raise ValueError("counterions needs a monatomic ion SMILES.")
+        charge = mol.GetAtomWithIdx(0).GetFormalCharge()
+        if charge <= 0 or self.n_carboxylates % charge:
+            raise ValueError(
+                f"{smiles} cannot neutralize {self.n_carboxylates} "
+                "carboxylates."
+            )
+        return Molecule(
+            num_mols=self.n_carboxylates // charge, smiles=smiles, name=name
+        )
+
+    def _load(self):
+        return None
+
+    def _build(self, sequence):
+        # mBuild's recipe wants exactly the monomers used in the sequence
+        # and names them A, B, C in the order they were added.
+        chain = mb.lib.recipes.Polymer()
+        used = [label for label in ("E", "R", "S") if label in sequence]
+        for label in used:
+            monomer, indices = self._blocks[label]
+            chain.add_monomer(
+                mb.clone(monomer), indices=indices, separation=self.bond_length
+            )
+        letters = {label: "ABC"[i] for i, label in enumerate(used)}
+        chain.build(n=1, sequence="".join(letters[s] for s in sequence))
+        return chain
+
+    def _generate(self):
+        rng = random.Random(self.seed)
+        for idx, length in enumerate(self.lengths):
+            for _ in range(self.n_mols[idx]):
+                sequence = ""
+                for block in self.pattern * length:
+                    if block == "E":
+                        sequence += "E"
+                    elif self.tacticity == "isotactic":
+                        sequence += "R"
+                    else:
+                        sequence += rng.choice("RS")
+                self.sequences.append(sequence)
+                mol = self._build(sequence)
+                mol.name = f"{self.name}_{len(sequence)}block"
+                self._molecules.append(mol)
+
+
 class LadderPolymer(Molecule):
     """A polymer whose repeat units join through two bonds (a ladder polymer).
 
