@@ -6,6 +6,7 @@ import unyt as u
 from flowermd import Simulation
 from flowermd.base import Pack
 from flowermd.library import AllAtomDPD, PolyEthylene
+from flowermd.library.simulations.phantom_walk import run_DPD
 from flowermd.tests import BaseTest
 
 pytest.importorskip("rdkit")
@@ -109,11 +110,11 @@ class TestAllAtomDPD(BaseTest):
         sim = Simulation(
             initial_state=ff.frame, forcefield=ff.hoomd_forces, dt=0.001
         )
-        result = sim.run_DPD(n_steps=40, chunk=20, stop=lambda s: False)
+        result = run_DPD(sim, n_steps=40, chunk=20, stop=lambda s: False)
         assert result["steps"] == 40
         assert all(np.isfinite(f.energy) for f in sim.forces)
-        fire = sim.run_FIRE(n_steps=20, dt=0.001, force_tol=1e-6)
-        assert fire["steps"] == 20
+        sim.run_FIRE(n_steps=20, force_tol=1e-6)
+        assert sim.timestep == 60
         assert all(np.isfinite(f.energy) for f in sim.forces)
 
 
@@ -154,5 +155,5 @@ class TestAllAtomDPDOpenFF(BaseTest):
         sim = Simulation(
             initial_state=ff.frame, forcefield=ff.hoomd_forces, dt=0.001
         )
-        sim.run_DPD(n_steps=20)
+        run_DPD(sim, n_steps=20)
         assert all(np.isfinite(f.energy) for f in sim.forces)
